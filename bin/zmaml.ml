@@ -26,7 +26,7 @@ let () =
   in
   args (List.tl (Array.to_list Sys.argv));
   if !file = "" then (prerr_endline "使い方: zmaml file.zma [-o out.bin] | zmaml file.bin --dis"; exit 2);
-  if !dis then (print_string (Dis.zma ~org:(Option.value !org ~default:0) ~data:!data (slurp !file)); exit 0);
+  if !dis then (print_string (Dis.disassemble ~org:(Option.value !org ~default:0) ~data:!data (slurp !file)); exit 0);
   let dirs = Filename.dirname !file :: List.rev !incs in
   let rd f =
     match List.find_opt Sys.file_exists (List.map (fun d -> Filename.concat d f) dirs) with

@@ -6,7 +6,7 @@
       文字の置き換えで済ませる。
    2. 読み込み（parse_line）: 1 行 -> Asm.line。式と命令の形を読む。
 
-   読むものと、まだ読まないものは docs/09-zma.md にまとめてある。 *)
+   読むものと、まだ読まないものは docs/zma.md にまとめてある。 *)
 
 open Asm
 
@@ -191,12 +191,11 @@ let mem ln s =
   else if idx && (rest.[0] = '+' || rest.[0] = '-') then M (X (String.sub l 0 2, expr ln (String.sub s 2 (String.length s - 2))))
   else M (I (expr ln s))
 
-(* [..] はメモリ参照。(..) は、全体を囲んでいるときだけメモリ参照とみなす（Zilog の書き方も読めるように）。
-   ZMA では ( ) は式のまとまりだけなので、ld a,(1+2) は ZMA なら定数 3、ここではメモリ参照になる。 *)
+(* [..] はメモリ参照。( ) は式のまとまりで、ld a,(1+2) は定数 3 *)
 let operand ln s =
   let n = String.length s and l = String.lowercase_ascii s in
   if List.mem l regs then R l
-  else if n >= 2 && (s.[0] = '[' || s.[0] = '(') && close s = n - 1 then mem ln (String.trim (String.sub s 1 (n - 2)))
+  else if n >= 2 && s.[0] = '[' && close s = n - 1 then mem ln (String.trim (String.sub s 1 (n - 2)))
   else I (expr ln s)
 
 (* jp hl / jp [ix] は、ジャンプ先ではなくレジスタの値へ飛ぶ *)
@@ -205,7 +204,7 @@ let fix op args =
   | "jp", [ R (("hl" | "ix" | "iy") as r) ] | "jp", [ M (X (("ix" | "iy") as r, Num 0)) ] -> [ M (R r) ]
   | _ -> args
 
-(* 行頭の「名前」と、そのあとの印（:: 大域、:= 大域の定数、: 局所、= か equ 局所の定数）と、残り *)
+(* 行頭の「名前」と、そのあとの印（:: 大域、:= 大域の定数、: 局所、= 局所の定数）と、残り *)
 type kind = Global | Const_g | Local | Const
 
 let head s =
@@ -219,9 +218,9 @@ let head s =
     let cut k = String.trim (String.sub r k (String.length r - k)) in
     if has "::" then Some (Global, name, cut 2)
     else if has ":=" then Some (Const_g, name, cut 2)
-    else if has ":" then (match word (cut 1) with "equ", v -> Some (Const, name, v) | _ -> Some (Local, name, cut 1))   (* 名前: equ 値 も読む *)
+    else if has ":" then Some (Local, name, cut 1)
     else if has "=" && not (has "==") then Some (Const, name, cut 1)
-    else match word r with "equ", v -> Some (Const, name, v) | _ -> None
+    else None
   end
 
 (* 展開の済んだ 1 行 -> 組み立ての行（ラベルと命令が一緒にあれば 2 つ） *)
@@ -241,16 +240,15 @@ let parse_line ln s : line list =
   lab @
   match op with
   | "" -> []
-  | "defb" | "db" | "defm" | "byte" -> [ Db (data (fun e -> [ e ])) ]
-  | "defw" | "dw" | "word" -> [ Dw (List.map (expr ln) args) ]
+  | "defb" -> [ Db (data (fun e -> [ e ])) ]
+  | "defw" -> [ Dw (List.map (expr ln) args) ]
   | "defd" -> [ Db (List.concat_map (fun a -> le 4 (expr ln a)) args) ]
-  | "space" | "ds" | "defs" ->      (* DEFS は、ZMA の -DEFS を付けた形（個数、埋める値）で読む *)
+  | "space" ->
     (match args with
      | [ n ] | [ n; "0" ] -> [ Ds (num n) ]
      | [ n; f ] -> [ Db (List.init (num n) (fun _ -> expr ln f)) ]
      | _ -> err ln "%s は 個数 [, 埋める値]" op)
   | "align" -> [ Align (num rest) ]
-  | "fit" -> [ Fit (num rest) ]
   | _ ->
     let ins = op, fix op (List.map (operand ln) args) in
     (try ignore (enc (fun _ -> 0) 0 ins)
@@ -266,8 +264,8 @@ type env = {
   depth : int;
 }
 
-let has_here = let rec f = function Here -> true | Add (a, b) | Bop (_, a, b) -> f a || f b
-                                  | Lo a | Hi a | Uop (_, a) -> f a | Num _ | Sym _ -> false in f
+let has_here = let rec f = function Here -> true | Bop (_, a, b) -> f a || f b
+                                  | Uop (_, a) -> f a | Num _ | Sym _ -> false in f
 
 (* いま値が決まる式の値。ラベルや $ が入っていれば None *)
 let value env ln s =

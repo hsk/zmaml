@@ -1,4 +1,4 @@
-(* Z80 逆アセンブラ。エミュレータと同じ x y z p q の読み方で、Asm の命令データに戻す。
+(* Z80 / R800 逆アセンブラ。命令コードを x y z p q に分けて読み、Asm の命令データに戻して ZMA の書き方で出す。
    アセンブラの逆関数なので、「逆アセンブルして組み立て直すと元に戻る」ことで両方を検査できる。 *)
 
 open Asm
@@ -7,7 +7,7 @@ exception Bad                    (* 公式の命令ではない *)
 
 let sx v = if v > 127 then v - 256 else v
 
-(* rd: 番地 -> バイト。戻り値は (1 行, 長さ)。読めないバイトは db にする。 *)
+(* rd: 番地 -> バイト。戻り値は (1 行, 長さ)。読めないバイトは defb にする。 *)
 let dis rd pc =
   let at = ref pc in
   let next () = let b = rd !at in incr at; b in
@@ -26,7 +26,7 @@ let dis rd pc =
   let rp2 p = if p = 3 then R "af" else rp p in
   let cc y = R [| "nz"; "z"; "nc"; "c"; "po"; "pe"; "p"; "m" |].(y) in
   let field op = op lsr 6, op lsr 3 land 7, op land 7 in
-  (* Zilog の書き方: add a,x / adc a,x / sbc a,x だが sub x / and x / ... *)
+  (* add a,x / adc a,x / sbc a,x だが sub x / and x / ... *)
   let alu_ins y x = List.nth alu y, if y < 4 && y <> 2 then [ R "a"; x ] else [ x ] in
   let cb () =
     let m = if !ix <> None then Some (mem ()) else None in   (* d は命令コードより前 *)
@@ -113,22 +113,7 @@ let dis rd pc =
   | op, args -> Ins (op, args), !at - pc
   | exception Bad -> Db [ Num (rd pc) ], 1
 
-(* 番地・バイト列・命令を並べた一覧 *)
-let listing ?(org = 0) bin =
-  let rd a = Char.code bin.[a - org] in
-  let buf = Buffer.create 1024 in
-  let pc = ref org in
-  while !pc < org + String.length bin do
-    let line, len =
-      try dis rd !pc with Invalid_argument _ -> Db [ Num (rd !pc) ], 1
-    in
-    let hex = String.concat " " (List.init len (fun i -> Printf.sprintf "%02x" (rd (!pc + i)))) in
-    Printf.bprintf buf "%04x  %-12s%s\n" !pc hex (show line);
-    pc := !pc + len
-  done;
-  Buffer.contents buf
-
-(* ---- ZMA 形式にする。組み立て直せる形（Zma.parse が読める）で、コメントに番地と機械語を付ける ---- *)
+(* ---- 逆アセンブルの出力。組み立て直せる形（Zma.parse が読める）で、コメントに番地と機械語を付ける ---- *)
 
 (* image の外を呼ぶ・飛ぶときの名前（MSX の BIOS）と、ポートの名前 *)
 let bios = [ 0x47, "wrtvdp"; 0x4a, "rdvrm"; 0x4d, "wrtvrm"; 0x56, "filvrm"; 0x5c, "ldirvm"; 0x5f, "chgmod"; 0x62, "chgclr";
@@ -136,8 +121,8 @@ let bios = [ 0x47, "wrtvdp"; 0x4a, "rdvrm"; 0x4d, "wrtvrm"; 0x56, "filvrm"; 0x5c
 let ports = [ 0x98, "MSX VDP data"; 0x99, "MSX VDP ctrl"; 0xa0, "MSX PSG addr"; 0xa1, "MSX PSG data"; 0xa8, "MSX slot";
               0xbe, "SMS VDP data"; 0xbf, "SMS VDP ctrl"; 0x7f, "SMS PSG"; 0xdc, "SMS pad 1" ]
 
-(* data: 命令にせず db にする範囲 (始め, 終わり)。データの表を命令として読まないために使う *)
-let zma ?(org = 0) ?(data = []) bin =
+(* data: 命令にせず defb にする範囲 (始め, 終わり)。データの表を命令として読まないために使う *)
+let disassemble ?(org = 0) ?(data = []) bin =
   let ends = org + String.length bin in
   let rd a = Char.code bin.[a - org] in
   let in_data a = List.exists (fun (lo, hi) -> a >= lo && a < hi) data in
@@ -146,7 +131,7 @@ let zma ?(org = 0) ?(data = []) bin =
     if pc >= ends then []
     else begin
       let line, len =
-        if in_data pc then begin                      (* 範囲の中は 8 バイトずつ db *)
+        if in_data pc then begin                      (* 範囲の中は 8 バイトずつ defb *)
           let hi = List.fold_left (fun m (lo, hi) -> if pc >= lo && pc < hi then hi else m) pc data in
           let k = min 8 (min hi ends - pc) in
           Db (List.init k (fun i -> Num (rd (pc + i)))), k
@@ -172,7 +157,7 @@ let zma ?(org = 0) ?(data = []) bin =
   let labelled = Hashtbl.create 64 in
   List.iter (fun (_, l, _) -> Option.iter (fun t -> Hashtbl.replace labelled t ()) (target l)) code;
   let b = Buffer.create 4096 in
-  Printf.bprintf b "; ZMA 形式（HRA! さんの zma で組み立て直せる書き方）の逆アセンブル（%d バイト、番地 0x%04x〜0x%04x）。\n; 行末のコメントは「番地: 機械語」。L で始まる名前は、飛び先から付けたラベル。\n    org 0x%x\n" (String.length bin) org (ends - 1) org;
+  Printf.bprintf b "; 逆アセンブル（ZMA の書き方）（%d バイト、番地 0x%04x〜0x%04x）。\n; 行末のコメントは「番地: 機械語」。L で始まる名前は、飛び先から付けたラベル。\n    org 0x%x\n" (String.length bin) org (ends - 1) org;
   List.iter
     (fun (pc, line, len) ->
       if Hashtbl.mem labelled pc then Printf.bprintf b "%s:\n" (name pc);
@@ -188,6 +173,6 @@ let zma ?(org = 0) ?(data = []) bin =
           List.find_map (function M (I (Num p)) -> List.assoc_opt p ports | _ -> None) args
         | _ -> None
       in
-      Printf.bprintf b "%-32s; %04x: %s%s\n" (show ~z:true line) pc hex (match hint with Some h -> "  " ^ h | None -> ""))
+      Printf.bprintf b "%-32s; %04x: %s%s\n" (show line) pc hex (match hint with Some h -> "  " ^ h | None -> ""))
     code;
   Buffer.contents b

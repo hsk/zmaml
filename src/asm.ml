@@ -1,12 +1,9 @@
-(* Z80 アセンブラ。命令は「ニーモニックとオペランドの並び」というデータで持つ。
-   コンパイラはこのデータを作り、ここで機械語と読めるテキストの両方にする。 *)
+(* Z80 / R800 アセンブラ。命令は「ニーモニックとオペランドの並び」というデータで持つ。
+   Zma（読み込み）と Dis（逆アセンブル）がこのデータを作り、ここで機械語か ZMA の書き方のテキストにする。 *)
 
 type e =                         (* アセンブル時に決まる式 *)
   | Num of int
   | Sym of string                (* ラベルの番地 *)
-  | Add of e * e
-  | Lo of e
-  | Hi of e
   | Bop of string * e * e        (* 二項演算（ZMA の式）: + - * / % << >> & | ^ == != < > <= >= && || *)
   | Uop of string * e            (* 単項演算: - ~ ! *)
   | Here                         (* $: いま組み立てている行の番地 *)
@@ -24,9 +21,7 @@ type line =
   | Dw of e list
   | Ds of int                    (* 0 で埋める *)
   | Align of int                 (* 番地がこの数の倍数になるまで 0 で埋める *)
-  | Fit of int                   (* 続く n バイトが 256 バイト境界をまたぐなら、境界まで埋める *)
   | Equ of string * e            (* 名前に値を付ける *)
-  | Rem of string                (* コメント *)
 
 exception Error of string
 let err fmt = Printf.ksprintf (fun s -> raise (Error s)) fmt
@@ -36,35 +31,29 @@ let err fmt = Printf.ksprintf (fun s -> raise (Error s)) fmt
 let rec show_e = function
   | Num n -> if n < 10 then string_of_int n else Printf.sprintf "0x%x" n
   | Sym s -> s
-  | Add (a, Num n) when n < 0 -> Printf.sprintf "%s-%d" (show_e a) (-n)
-  | Add (a, b) -> show_e a ^ "+" ^ show_e b
-  | Lo a -> "(" ^ show_e a ^ ")&255"
-  | Hi a -> "(" ^ show_e a ^ ")>>8"
   | Bop (o, a, b) -> Printf.sprintf "(%s %s %s)" (show_e a) o (show_e b)
   | Uop (o, a) -> Printf.sprintf "(%s%s)" o (show_e a)
   | Here -> "$"
 
-(* z を付けると ZMA の書き方（メモリ参照は [..]、定数は :=、データは defb / defw / space）にする *)
-let rec show_arg ?(z = false) = function
+(* ZMA の書き方: メモリ参照は [..]、定数は :=、データは defb / defw / space *)
+let rec show_arg = function
   | R r -> r
   | I e -> show_e e
-  | M a -> let s = show_arg ~z a in if z then "[" ^ s ^ "]" else "(" ^ s ^ ")"
+  | M a -> "[" ^ show_arg a ^ "]"
   | X (r, Num d) when d < 0 -> Printf.sprintf "%s-%d" r (-d)
   | X (r, e) -> r ^ "+" ^ show_e e
 
-let show_ins ?(z = false) (op, args) =
-  if args = [] then op else op ^ " " ^ String.concat "," (List.map (show_arg ~z) args)
+let show_ins (op, args) =
+  if args = [] then op else op ^ " " ^ String.concat "," (List.map show_arg args)
 
-let show ?(z = false) = function
-  | Ins (op, args) -> "    " ^ show_ins ~z (op, args)
+let show = function
+  | Ins (op, args) -> "    " ^ show_ins (op, args)
   | Label l -> l ^ ":"
-  | Db es -> "    " ^ (if z then "defb " else "db ") ^ String.concat "," (List.map show_e es)
-  | Dw es -> "    " ^ (if z then "defw " else "dw ") ^ String.concat "," (List.map show_e es)
-  | Ds n -> Printf.sprintf (if z then "    space %d" else "    ds %d") n
+  | Db es -> "    defb " ^ String.concat "," (List.map show_e es)
+  | Dw es -> "    defw " ^ String.concat "," (List.map show_e es)
+  | Ds n -> Printf.sprintf "    space %d" n
   | Align n -> Printf.sprintf "    align %d" n
-  | Fit n -> Printf.sprintf "    fit %d" n
-  | Equ (l, e) -> if z then Printf.sprintf "%s := %s" l (show_e e) else Printf.sprintf "%s: equ %s" l (show_e e)
-  | Rem s -> "; " ^ s
+  | Equ (l, e) -> Printf.sprintf "%s := %s" l (show_e e)
 
 (* ---- オペランドの分類。番号は命令コードの y, z, p にそのまま入る ---- *)
 
@@ -208,65 +197,11 @@ let enc v pc (op, args) =
   | Some p, Some d, o :: rest -> p :: o :: d :: rest
   | _ -> assert false
 
-(* ---- 命令が書き換える 8bit レジスタ（a b c d e h l）。フラグと SP、メモリは数えない。
-   コード生成が「生きている値を壊さないか」を調べるのに使う。分からない命令は全部とみなす。 *)
-
-let all8 = [ "a"; "b"; "c"; "d"; "e"; "h"; "l" ]
-let bare = [ "ei"; "di"; "halt" ]      (* 言語から関数のように呼べる、1 命令だけの組み込み *)
-
-(* 引数をレジスタで受ける組み込み: 名前, (引数のレジスタ, 壊すレジスタ, 命令)。結果があれば A に返る *)
-let prims = [
-  "copy", ([ "de"; "hl"; "bc" ], [ "b"; "c"; "d"; "e"; "h"; "l" ], ("ldir", []));   (* copy(dst, src, n): メモリを写す *)
-  ".ldir", ([ "de"; "hl"; "bc" ], [ "b"; "c"; "d"; "e"; "h"; "l" ], ("ldir", []));  (* ブロック転送の最適化（Blk）が使う。ユーザーは書けない名前 *)
-  ".lddr", ([ "de"; "hl"; "bc" ], [ "b"; "c"; "d"; "e"; "h"; "l" ], ("lddr", []));
-  ".otir", ([ "c"; "hl"; "b" ], [ "b"; "h"; "l" ], ("otir", []));                  (* Blk が使う: ポートへ書くループ（前から、後ろから） *)
-  ".otdr", ([ "c"; "hl"; "b" ], [ "b"; "h"; "l" ], ("otdr", []));
-  ".inir", ([ "c"; "hl"; "b" ], [ "b"; "h"; "l" ], ("inir", []));                  (* ポートから読むループ *)
-  ".indr", ([ "c"; "hl"; "b" ], [ "b"; "h"; "l" ], ("indr", []));
-  "outs", ([ "c"; "hl"; "b" ], [ "b"; "h"; "l" ], ("otir", []));                  (* outs(port, src, n): n バイトを続けてポートへ *)
-  "out", ([ "c"; "a" ], [], ("out", [ M (R "c"); R "a" ]));                       (* out(port, v): 変数で選ぶポートへ書く *)
-  "inp", ([ "c" ], [ "a" ], ("in", [ R "a"; M (R "c") ]));                        (* inp(port): 変数で選ぶポートを読む *)
-]
-
-let halves = function
-  | "bc" -> [ "b"; "c" ]
-  | "de" -> [ "d"; "e" ]
-  | "hl" -> [ "h"; "l" ]
-  | "af" -> [ "a" ]
-  | ("ix" | "iy") as r -> [ r ]                     (* 半分ずつには使わない *)
-  | r -> if List.mem r all8 then [ r ] else []
-
-let writes (op, args) =
-  match op, args with
-  | ("jp" | "jr" | "ret" | "push" | "cp" | "bit" | "out" | "nop" | "di" | "ei" | "halt" | "scf" | "ccf" | "im"), _ -> []
-  | ("or" | "and"), [ R "a" ] -> []                       (* フラグを立てるだけ *)
-  | ("ld" | "inc" | "dec" | "pop" | "in"), R r :: _ -> halves r
-  | ("res" | "set"), [ _; R r ] -> [ r ]
-  | _, [ R r ] when List.mem op rot -> [ r ]
-  | _, M _ :: _ when List.mem op ("ld" :: "inc" :: "dec" :: rot) -> []
-  | ("res" | "set"), [ _; M _ ] -> []
-  | ("add" | "adc" | "sbc"), R "hl" :: _ -> [ "h"; "l" ]
-  | ("cpl" | "neg" | "daa" | "rlca" | "rrca" | "rla" | "rra" | "rld" | "rrd"), _ -> [ "a" ]
-  | _ when List.mem op alu -> [ "a" ]
-  | "ex", [ R "de"; R "hl" ] -> [ "d"; "e"; "h"; "l" ]
-  | "ex", [ M (R "sp"); R "hl" ] -> [ "h"; "l" ]
-  | "ex", _ -> [ "a" ]
-  | "djnz", _ -> [ "b" ]
-  | ("ldi" | "ldd" | "ldir" | "lddr"), _ -> [ "b"; "c"; "d"; "e"; "h"; "l" ]
-  | ("cpi" | "cpd" | "cpir" | "cpdr"), _ -> [ "b"; "c"; "h"; "l" ]
-  | ("ini" | "ind" | "inir" | "indr" | "outi" | "outd" | "otir" | "otdr"), _ -> [ "b"; "h"; "l" ]
-  | "mulub", _ -> [ "h"; "l" ]                            (* R800 *)
-  | "muluw", _ -> [ "d"; "e"; "h"; "l" ]
-  | _ -> all8
-
 (* ---- 全体を組み立てる。2 回なめる: 1 回目で番地を決め、2 回目で値を埋める ---- *)
 
 let rec eval look pc = function
   | Num n -> n
   | Sym s -> look s
-  | Add (a, b) -> eval look pc a + eval look pc b
-  | Lo a -> eval look pc a land 0xff
-  | Hi a -> eval look pc a lsr 8 land 0xff
   | Here -> pc
   | Uop (o, a) ->
     let x = eval look pc a in
@@ -307,14 +242,10 @@ let assemble ?(org = 0) lines =
         | Dw es -> List.iter (fun e -> let x = v e in byte x; byte (x lsr 8)) es
         | Ds n -> for _ = 1 to n do byte 0 done
         | Align n -> while pc () mod n <> 0 do byte 0 done
-        | Fit n -> if (pc () land 0xff) + n > 256 then while pc () land 0xff <> 0 do byte 0 done
-        | Equ (l, e) -> Hashtbl.replace syms l (v e)
-        | Rem _ -> ())
+        | Equ (l, e) -> Hashtbl.replace syms l (v e))
       lines;
     Buffer.contents buf
   in
   ignore (pass false);
   let bin = pass true in
   bin, Hashtbl.fold (fun k a l -> (k, a) :: l) syms []
-
-let listing ?(z = false) lines = String.concat "\n" (List.map (show ~z) lines) ^ "\n"
