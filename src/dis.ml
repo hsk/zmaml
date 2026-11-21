@@ -28,13 +28,13 @@ let dis rd pc =
   let cc y = R [| "nz"; "z"; "nc"; "c"; "po"; "pe"; "p"; "m" |].(y) in
   let field op = op lsr 6, op lsr 3 land 7, op land 7 in
   (* add a,x / adc a,x / sbc a,x だが sub x / and x / ... *)
-  let alu_ins y x = List.nth alu y, if y < 4 && y <> 2 then [ R "a"; x ] else [ x ] in
+  let alu_ins y x = List.nth Encoder.alu y, if y < 4 && y <> 2 then [ R "a"; x ] else [ x ] in
   let cb () =
     let m = if !ix <> None then Some (mem ()) else None in   (* d は命令コードより前 *)
     let x, y, z = field (next ()) in
     let a = match m with Some a -> if z <> 6 then raise Bad; a | None -> r8 z in
     if x = 0 && y = 6 then raise Bad;                 (* sll は非公式 *)
-    if x = 0 then List.nth rot y, [ a ]
+    if x = 0 then List.nth Encoder.rot y, [ a ]
     else [| ""; "bit"; "res"; "set" |].(x), [ I (Num y); a ]
   in
   let ed () =
@@ -53,7 +53,7 @@ let dis rd pc =
     | 1, 7 when y < 4 ->
       "ld", List.nth [ [ R "i"; R "a" ]; [ R "r"; R "a" ]; [ R "a"; R "i" ]; [ R "a"; R "r" ] ] y
     | _ ->
-      (match List.find_opt (fun (_, b) -> b = [ 0xed; op ]) plain with
+      (match List.find_opt (fun (_, b) -> b = [ 0xed; op ]) Encoder.plain with
        | Some (name, _) -> name, []
        | None -> raise Bad)
   in
@@ -106,7 +106,7 @@ let dis rd pc =
     | 3, 6 -> alu_ins y (n ())
     | 3, 7 -> "rst", [ I (Num (y * 8)) ]
     | _ ->
-      (match List.find_opt (fun (_, b) -> b = [ op ]) plain with
+      (match List.find_opt (fun (_, b) -> b = [ op ]) Encoder.plain with
        | Some (name, _) -> name, []
        | None -> raise Bad)
   in
