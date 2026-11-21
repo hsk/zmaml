@@ -207,7 +207,7 @@ let enc v pc (op, args) =
   | Some p, Some d, o :: rest -> p :: o :: d :: rest
   | _ -> assert false
 
-(* ---- 全体を組み立てる。2 回なめる: 1 回目で番地を決め、2 回目で値を埋める ---- *)
+(* ---- 式の値 ---- *)
 
 let rec eval look pc = function
   | Num n -> n
@@ -227,38 +227,44 @@ let rec eval look pc = function
      | "&&" -> t (x <> 0 && y <> 0) | "||" -> t (x <> 0 || y <> 0)
      | _ -> err "知らない演算: %s" o)
 
-let build ?(org = 0) lines =
-  let syms = Hashtbl.create 64 in
-  let pass final =
-    let buf = Buffer.create 1024 in
-    let pc () = org + Buffer.length buf in
-    let look s =
-      match Hashtbl.find_opt syms s with
-      | Some a -> a
-      | None -> if final then err "未定義のラベル: %s" s else pc ()
+(* 全体を組み立てる。2 回なめる: 1 回目で番地を決め、2 回目で値を埋める。
+   戻り値は (機械語, ラベルの表) *)
+module Builder : sig
+  val build : ?org:int -> line list -> string * (string * int) list
+end = struct
+  let build ?(org = 0) lines =
+    let syms = Hashtbl.create 64 in
+    let pass final =
+      let buf = Buffer.create 1024 in
+      let pc () = org + Buffer.length buf in
+      let look s =
+        match Hashtbl.find_opt syms s with
+        | Some a -> a
+        | None -> if final then err "未定義のラベル: %s" s else pc ()
+      in
+      let at = ref org in                                   (* 行の先頭の番地。式の $ になる *)
+      let v e = eval look !at e in
+      let byte b = Buffer.add_char buf (Char.chr (b land 0xff)) in
+      List.iter
+        (fun l ->
+          at := pc ();
+          match l with
+          | Ins (op, args) -> List.iter byte (enc v (pc ()) (op, args))
+          | Label l ->
+            if (not final) && Hashtbl.mem syms l then err "ラベルが重複: %s" l;
+            Hashtbl.replace syms l (pc ())
+          | Db es -> List.iter (fun e -> byte (v e)) es
+          | Dw es -> List.iter (fun e -> let x = v e in byte x; byte (x lsr 8)) es
+          | Ds n -> for _ = 1 to n do byte 0 done
+          | Align n -> while pc () mod n <> 0 do byte 0 done
+          | Equ (l, e) -> Hashtbl.replace syms l (v e))
+        lines;
+      Buffer.contents buf
     in
-    let at = ref org in                                   (* 行の先頭の番地。式の $ になる *)
-    let v e = eval look !at e in
-    let byte b = Buffer.add_char buf (Char.chr (b land 0xff)) in
-    List.iter
-      (fun l ->
-        at := pc ();
-        match l with
-        | Ins (op, args) -> List.iter byte (enc v (pc ()) (op, args))
-        | Label l ->
-          if (not final) && Hashtbl.mem syms l then err "ラベルが重複: %s" l;
-          Hashtbl.replace syms l (pc ())
-        | Db es -> List.iter (fun e -> byte (v e)) es
-        | Dw es -> List.iter (fun e -> let x = v e in byte x; byte (x lsr 8)) es
-        | Ds n -> for _ = 1 to n do byte 0 done
-        | Align n -> while pc () mod n <> 0 do byte 0 done
-        | Equ (l, e) -> Hashtbl.replace syms l (v e))
-      lines;
-    Buffer.contents buf
-  in
-  ignore (pass false);
-  let bin = pass true in
-  bin, Hashtbl.fold (fun k a l -> (k, a) :: l) syms []
+    ignore (pass false);
+    let bin = pass true in
+    bin, Hashtbl.fold (fun k a l -> (k, a) :: l) syms []
+end
 
 (* ======== ZMA の書き方の読み込み ========
    外に見せるのは parse だけ。字句、式、展開などの部品は、この中に閉じておく。 *)
@@ -662,5 +668,5 @@ end
 let assemble ?(org = 0) ?read ?defs src =
   let o, lines = Parser.parse ?read ?defs src in
   let org = Option.value o ~default:org in
-  let bin, syms = build ~org lines in
+  let bin, syms = Builder.build ~org lines in
   org, bin, syms
