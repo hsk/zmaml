@@ -337,8 +337,6 @@ end = struct
       end
   end
 
-  open Lexer
-
   (* ---- 式 ----
      ZMA の優先順位（ゆるい順）: || && | ^ & ==,!= < > <= >= << >> + - * / %。単項は + - ! ~。 *)
 
@@ -356,7 +354,7 @@ end = struct
     let m = String.length t' in
     let hex b = int_of_string_opt ("0x" ^ b) in
     let all p b = b <> "" && String.for_all p b in
-    let is_hex c = is_digit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') in
+    let is_hex c = Lexer.is_digit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') in
     let r =
       if m > 1 && t'.[0] = '$' then hex (String.sub t' 1 (m - 1))
       else if m > 2 && (String.sub t' 0 2 = "0x" || String.sub t' 0 2 = "0X") then hex (String.sub t' 2 (m - 2))
@@ -409,14 +407,14 @@ end = struct
         if peek 0 <> ')' then err ln "閉じ括弧がない: %s" s;
         incr i;
         e
-      | '\'' when is_char s !i -> let c = s.[!i + 1] in i := !i + 3; Num (Char.code c)
+      | '\'' when Lexer.is_char s !i -> let c = s.[!i + 1] in i := !i + 3; Num (Char.code c)
       | _ ->
         let a = !i in
-        while !i < n && is_tok s.[!i] do incr i done;
+        while !i < n && Lexer.is_tok s.[!i] do incr i done;
         let t = String.sub s a (!i - a) in
         if t = "" then err ln "式が読めない: %s" s
         else if t = "$" then Here
-        else if is_digit t.[0] || (t.[0] = '$' && String.length t > 1) then number ln t
+        else if Lexer.is_digit t.[0] || (t.[0] = '$' && String.length t > 1) then number ln t
         else Sym t
     in
     let e = bin levels in
@@ -469,8 +467,8 @@ end = struct
   let head s =
     let n = String.length s in
     let i = ref 0 in
-    while !i < n && is_id s.[!i] do incr i done;
-    if !i = 0 || is_digit s.[0] then None
+    while !i < n && Lexer.is_id s.[!i] do incr i done;
+    if !i = 0 || Lexer.is_digit s.[0] then None
     else begin
       let name = String.sub s 0 !i and r = String.trim (String.sub s !i (n - !i)) in
       let has p = String.starts_with ~prefix:p r in
@@ -489,8 +487,8 @@ end = struct
       | Some ((Const | Const_g), n, rest) -> [ Equ (n, expr ln rest) ], ""
       | None -> [], s
     in
-    let op, rest = word s in
-    let args = split rest in
+    let op, rest = Lexer.word s in
+    let args = Lexer.split rest in
     let num a = match expr ln a with Num v -> v | _ -> err ln "%s の引数は数" op in
     let data one = List.concat_map (fun a ->
         let k = String.length a in
@@ -541,7 +539,7 @@ end = struct
     let rec go d acc = function
       | [] -> err ln "%s がない" close
       | ((_, t) as l) :: rest ->
-        let k = fst (word t) in
+        let k = fst (Lexer.word t) in
         if k = close && d = 0 then List.rev acc, rest
         else go (if List.mem k opens then d + 1 else if k = close then d - 1 else d) (l :: acc) rest
     in
@@ -552,7 +550,7 @@ end = struct
     let rec go cond acc d out = function
       | [] -> List.rev ((cond, List.rev acc) :: out)
       | ((_, t) as x) :: rest ->
-        let k, r = word t in
+        let k, r = Lexer.word t in
         if d = 0 && k = "elseif" then go r [] 0 ((cond, List.rev acc) :: out) rest
         else if d = 0 && k = "else" then go "1" [] 0 ((cond, List.rev acc) :: out) rest
         else go cond (x :: acc) (if k = "if" then d + 1 else if k = "endif" then d - 1 else d) out rest
@@ -566,30 +564,30 @@ end = struct
     else begin
       incr ctr;
       let tbl = List.map (fun n -> n, Printf.sprintf "%s@%d" n !ctr) locals in
-      List.map (fun (l, t) -> l, subst tbl t) lines
+      List.map (fun (l, t) -> l, Lexer.subst tbl t) lines
     end
 
   let unquote ln s =
     let n = String.length s in
     if n >= 2 && s.[0] = '"' && s.[n - 1] = '"' then String.sub s 1 (n - 2) else err ln "文字列（\"...\"）が要る: %s" s
 
-  let lines_of text = List.filter (fun (_, t) -> t <> "") (List.mapi (fun i s -> i + 1, norm s) (String.split_on_char '\n' text))
+  let lines_of text = List.filter (fun (_, t) -> t <> "") (List.mapi (fun i s -> i + 1, Lexer.norm s) (String.split_on_char '\n' text))
 
   (* rd: ファイル名 -> 中身。戻り値は (定数などを引き継いだ env, 展開した行) *)
   let rec go rd ctr env = function
     | [] -> env, []
     | (ln, t) :: rest ->
-      let w, r = word t in
-      let w2, r2 = word r in
+      let w, r = Lexer.word t in
+      let w2, r2 = Lexer.word r in
       let more env' ls = let e, tl = go rd ctr { env' with vars = env.vars } rest in e, ls @ tl in
       if env.depth > 64 then err ln "展開が深すぎる（マクロが自分を呼んでいないか）"
       else if w2 = "macro" then begin
         let body, rest = block ln [] "endm" rest in
-        go rd ctr { env with macros = (w, (split r2, body)) :: env.macros } rest
+        go rd ctr { env with macros = (w, (Lexer.split r2, body)) :: env.macros } rest
       end
       else if w = "repeat" then begin
         (* 変数の名前は置き換えない。回数だけ、外側の変数で置き換える *)
-        let v, n = match split r with [ v; n ] -> v, need env ln (subst env.vars n) | _ -> err ln "repeat は 変数, 回数" in
+        let v, n = match Lexer.split r with [ v; n ] -> v, need env ln (Lexer.subst env.vars n) | _ -> err ln "repeat は 変数, 回数" in
         let body, rest = block ln [ "repeat" ] "endr" rest in
         let env', ls =
           List.fold_left
@@ -602,12 +600,12 @@ end = struct
         e, ls @ tl
       end
       else begin
-        let t = subst env.vars t in
-        let w, r = word t in
+        let t = Lexer.subst env.vars t in
+        let w, r = Lexer.word t in
         match w with
         | "if" ->
           let body, rest = block ln [ "if" ] "endif" rest in
-          let chosen = List.find_opt (fun (c, _) -> need env ln (subst env.vars c) <> 0) (branches r body) in
+          let chosen = List.find_opt (fun (c, _) -> need env ln (Lexer.subst env.vars c) <> 0) (branches r body) in
           let env', ls = match chosen with Some (_, b) -> go rd ctr { env with depth = env.depth + 1 } b | None -> env, [] in
           let e, tl = go rd ctr { env' with vars = env.vars } rest in
           e, ls @ tl
@@ -628,7 +626,7 @@ end = struct
         | _ ->
           (match List.assoc_opt w env.macros with
            | Some (params, body) ->
-             let args = split r in
+             let args = Lexer.split r in
              if List.length args <> List.length params then err ln "%s の引数は %d 個" w (List.length params);
              let env', ls = go rd ctr { env with vars = List.combine params args; depth = env.depth + 1 } body in
              more env' ls
@@ -650,13 +648,13 @@ end = struct
     let env = { vars = []; consts = defs; macros = []; depth = 0 } in
     let _, ls = go read (ref 0) env (lines_of src) in
     match ls with
-    | (ln, t) :: rest when fst (word t) = "org" ->
-      let r = snd (word t) in
+    | (ln, t) :: rest when fst (Lexer.word t) = "org" ->
+      let r = snd (Lexer.word t) in
       (match value env ln r with
        | Some v -> Some v, List.concat_map (fun (l, t) -> parse_line l t) rest
        | None -> err ln "org は数")
     | _ ->
-      List.iter (fun (ln, t) -> if fst (word t) = "org" then err ln "org は先頭に 1 つだけ（途中の org には未対応）") ls;
+      List.iter (fun (ln, t) -> if fst (Lexer.word t) = "org" then err ln "org は先頭に 1 つだけ（途中の org には未対応）") ls;
       None, List.concat_map (fun (l, t) -> parse_line l t) ls
 end
 
