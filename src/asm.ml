@@ -1,67 +1,70 @@
 (* ZMA（HRA! さんの Z80/R800 クロスアセンブラ、https://github.com/hra1129/zma ）の書き方を読み、機械語にする。
 
    3 つに分ける。どれも、前の結果だけから次を作る関数の組み合わせで、書き換える変数はほとんどない。
-   1. 命令の組み立て: 命令を「ニーモニックとオペランドの並び」というデータ（line）で持ち、
+   1. 命令の組み立て: 命令を「ニーモニックとオペランドの並び」というデータ（Ast.line）で持ち、
       機械語か ZMA の書き方のテキストにする。逆アセンブラ（dis.ml）もこのデータを作る。
    2. 展開（expand）: 行のリスト -> 行のリスト。MACRO、REPEAT、IF、SCOPE、INCLUDE、BINARY_LINK を
       文字の置き換えで済ませる。
-   3. 読み込み（parse_line）: 1 行 -> line。式と命令の形を読む。
+   3. 読み込み（parse_line）: 1 行 -> Ast.line。式と命令の形を読む。
 
    読むものと、まだ読まないものは docs/zma.md にまとめてある。 *)
 
-type e =                         (* アセンブル時に決まる式 *)
-  | Num of int
-  | Sym of string                (* ラベルの番地 *)
-  | Bop of string * e * e        (* 二項演算（ZMA の式）: + - * / % << >> & | ^ == != < > <= >= && || *)
-  | Uop of string * e            (* 単項演算: - ~ ! *)
-  | Here                         (* $: いま組み立てている行の番地 *)
+(* ---- 命令のデータ（AST）と、それを ZMA の書き方のテキストにする show ---- *)
+module Ast = struct
+  type e =                         (* アセンブル時に決まる式 *)
+    | Num of int
+    | Sym of string                (* ラベルの番地 *)
+    | Bop of string * e * e        (* 二項演算（ZMA の式）: + - * / % << >> & | ^ == != < > <= >= && || *)
+    | Uop of string * e            (* 単項演算: - ~ ! *)
+    | Here                         (* $: いま組み立てている行の番地 *)
 
-type arg =
-  | R of string                  (* レジスタ名か条件名: a hl nz ... *)
-  | I of e                       (* 即値 *)
-  | M of arg                     (* (…) メモリ参照 *)
-  | X of string * e              (* ix+d。M の中に置く *)
+  type arg =
+    | R of string                  (* レジスタ名か条件名: a hl nz ... *)
+    | I of e                       (* 即値 *)
+    | M of arg                     (* (…) メモリ参照 *)
+    | X of string * e              (* ix+d。M の中に置く *)
 
-type line =
-  | Ins of (string * arg list)
-  | Label of string
-  | Db of e list
-  | Dw of e list
-  | Ds of int                    (* 0 で埋める *)
-  | Align of int                 (* 番地がこの数の倍数になるまで 0 で埋める *)
-  | Equ of string * e            (* 名前に値を付ける *)
+  type line =
+    | Ins of (string * arg list)
+    | Label of string
+    | Db of e list
+    | Dw of e list
+    | Ds of int                    (* 0 で埋める *)
+    | Align of int                 (* 番地がこの数の倍数になるまで 0 で埋める *)
+    | Equ of string * e            (* 名前に値を付ける *)
+
+  let rec show_e = function
+    | Num n -> if n < 10 then string_of_int n else Printf.sprintf "0x%x" n
+    | Sym s -> s
+    | Bop (o, a, b) -> Printf.sprintf "(%s %s %s)" (show_e a) o (show_e b)
+    | Uop (o, a) -> Printf.sprintf "(%s%s)" o (show_e a)
+    | Here -> "$"
+
+  (* ZMA の書き方: メモリ参照は [..]、定数は :=、データは defb / defw / space *)
+  let rec show_arg = function
+    | R r -> r
+    | I e -> show_e e
+    | M a -> "[" ^ show_arg a ^ "]"
+    | X (r, Num d) when d < 0 -> Printf.sprintf "%s-%d" r (-d)
+    | X (r, e) -> r ^ "+" ^ show_e e
+
+  let show_ins (op, args) =
+    if args = [] then op else op ^ " " ^ String.concat "," (List.map show_arg args)
+
+  let show = function
+    | Ins (op, args) -> "    " ^ show_ins (op, args)
+    | Label l -> l ^ ":"
+    | Db es -> "    defb " ^ String.concat "," (List.map show_e es)
+    | Dw es -> "    defw " ^ String.concat "," (List.map show_e es)
+    | Ds n -> Printf.sprintf "    space %d" n
+    | Align n -> Printf.sprintf "    align %d" n
+    | Equ (l, e) -> Printf.sprintf "%s := %s" l (show_e e)
+end
+
+open Ast
 
 exception Error of string
 let err fmt = Printf.ksprintf (fun s -> raise (Error s)) fmt
-
-(* ---- テキストにする ---- *)
-
-let rec show_e = function
-  | Num n -> if n < 10 then string_of_int n else Printf.sprintf "0x%x" n
-  | Sym s -> s
-  | Bop (o, a, b) -> Printf.sprintf "(%s %s %s)" (show_e a) o (show_e b)
-  | Uop (o, a) -> Printf.sprintf "(%s%s)" o (show_e a)
-  | Here -> "$"
-
-(* ZMA の書き方: メモリ参照は [..]、定数は :=、データは defb / defw / space *)
-let rec show_arg = function
-  | R r -> r
-  | I e -> show_e e
-  | M a -> "[" ^ show_arg a ^ "]"
-  | X (r, Num d) when d < 0 -> Printf.sprintf "%s-%d" r (-d)
-  | X (r, e) -> r ^ "+" ^ show_e e
-
-let show_ins (op, args) =
-  if args = [] then op else op ^ " " ^ String.concat "," (List.map show_arg args)
-
-let show = function
-  | Ins (op, args) -> "    " ^ show_ins (op, args)
-  | Label l -> l ^ ":"
-  | Db es -> "    defb " ^ String.concat "," (List.map show_e es)
-  | Dw es -> "    defw " ^ String.concat "," (List.map show_e es)
-  | Ds n -> Printf.sprintf "    space %d" n
-  | Align n -> Printf.sprintf "    align %d" n
-  | Equ (l, e) -> Printf.sprintf "%s := %s" l (show_e e)
 
 (* ---- オペランドの分類。番号は命令コードの y, z, p にそのまま入る ---- *)
 
