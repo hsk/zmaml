@@ -1,0 +1,3 @@
+(executable
+ (name zmaml)
+ (libraries zmaml))
