@@ -1,6 +1,6 @@
 # ZMA の記法のアセンブルとディスアセンブル
 
-zmaml は、HRA! さんの Z80/R800 クロスアセンブラ [ZMA](https://github.com/hra1129/zma) の書き方だけを読み、逆アセンブルも ZMA の記法で出します。
+zmaml は、HRA! さんの Z80/R800 クロスアセンブラ [ZMA](https://github.com/hra1129/zma) の記法だけをアセンブルし、逆アセンブルも ZMA の記法で出します。
 
 > **確かめたことと、確かめていないこと。** ZMA の取扱説明書（[zma_doc.md](https://github.com/hra1129/zma/blob/main/zma_doc.md)）の例は、手で確かめた機械語と一致します（[test/t_asm.ml](../test/t_asm.ml)）。逆アセンブルして組み立て直すと元に戻ることも確かめています。**本物の ZMA での突き合わせは、まだしていません。**
 
