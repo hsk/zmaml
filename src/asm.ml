@@ -268,73 +268,76 @@ module Parser : sig
 end = struct
   let err ln fmt = Printf.ksprintf (fun s -> raise (Error (Printf.sprintf "%d 行目: %s" ln s))) fmt
 
-  (* ---- 字句 ---- *)
+  (* ---- 字句: 文字の並びを、コメント・カンマ・語・名前の置き換えで切り分ける ---- *)
+  module Lexer = struct
+    let is_id c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c = '_' || c = '.' || c = '@'
+    let is_digit c = c >= '0' && c <= '9'
+    let is_tok c = is_id c || c = '$'
 
-  let is_id c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c = '_' || c = '.' || c = '@'
-  let is_digit c = c >= '0' && c <= '9'
-  let is_tok c = is_id c || c = '$'
+    (* 'c' の形の文字定数が i から始まるか（af' の ' とは区別する） *)
+    let is_char s i = i + 2 < String.length s && s.[i] = '\'' && s.[i + 2] = '\'' && (i = 0 || not (is_id s.[i - 1]))
 
-  (* 'c' の形の文字定数が i から始まるか（af' の ' とは区別する） *)
-  let is_char s i = i + 2 < String.length s && s.[i] = '\'' && s.[i + 2] = '\'' && (i = 0 || not (is_id s.[i - 1]))
-
-  (* コメント（; から後ろ）を捨てて、タブを空白にして、前後の空白を取る。文字列と文字定数の中の ; は残す *)
-  let norm s =
-    let s = String.map (fun c -> if c = '\t' || c = '\r' then ' ' else c) s in
-    let n = String.length s in
-    let rec go i q =
-      if i >= n then s
-      else if s.[i] = ';' && not q then String.sub s 0 i
-      else if s.[i] = '"' then go (i + 1) (not q)
-      else if (not q) && is_char s i then go (i + 3) q
-      else go (i + 1) q
-    in
-    String.trim (go 0 false)
-
-  (* 括弧の外のカンマで分ける *)
-  let split s =
-    let n = String.length s in
-    let part a b = String.trim (String.sub s a (b - a)) in
-    let rec go i from depth q acc =
-      if i >= n then List.rev (part from n :: acc)
-      else if s.[i] = '"' then go (i + 1) from depth (not q) acc
-      else if q then go (i + 1) from depth q acc
-      else if is_char s i then go (i + 3) from depth q acc
-      else match s.[i] with
-        | '(' | '[' -> go (i + 1) from (depth + 1) q acc
-        | ')' | ']' -> go (i + 1) from (depth - 1) q acc
-        | ',' when depth = 0 -> go (i + 1) (i + 1) depth q (part from i :: acc)
-        | _ -> go (i + 1) from depth q acc
-    in
-    if s = "" then [] else go 0 0 0 false []
-
-  (* 最初の語（小文字にする）と、残り *)
-  let word s =
-    match String.index_opt s ' ' with
-    | Some i -> String.lowercase_ascii (String.sub s 0 i), String.trim (String.sub s i (String.length s - i))
-    | None -> String.lowercase_ascii s, ""
-
-  (* 名前の部分を tbl で置き換える。文字列と文字定数の中は触らない *)
-  let subst tbl s =
-    if tbl = [] then s
-    else begin
-      let n = String.length s and b = Buffer.create 64 in
+    (* コメント（; から後ろ）を捨てて、タブを空白にして、前後の空白を取る。文字列と文字定数の中の ; は残す *)
+    let norm s =
+      let s = String.map (fun c -> if c = '\t' || c = '\r' then ' ' else c) s in
+      let n = String.length s in
       let rec go i q =
-        if i < n then
-          if s.[i] = '"' then (Buffer.add_char b '"'; go (i + 1) (not q))
-          else if q then (Buffer.add_char b s.[i]; go (i + 1) q)
-          else if is_char s i then (Buffer.add_string b (String.sub s i 3); go (i + 3) q)
-          else if is_tok s.[i] then begin
-            let j = ref i in
-            while !j < n && is_tok s.[!j] do incr j done;
-            let t = String.sub s i (!j - i) in
-            Buffer.add_string b (Option.value ~default:t (List.assoc_opt t tbl));
-            go !j q
-          end
-          else (Buffer.add_char b s.[i]; go (i + 1) q)
+        if i >= n then s
+        else if s.[i] = ';' && not q then String.sub s 0 i
+        else if s.[i] = '"' then go (i + 1) (not q)
+        else if (not q) && is_char s i then go (i + 3) q
+        else go (i + 1) q
       in
-      go 0 false;
-      Buffer.contents b
-    end
+      String.trim (go 0 false)
+
+    (* 括弧の外のカンマで分ける *)
+    let split s =
+      let n = String.length s in
+      let part a b = String.trim (String.sub s a (b - a)) in
+      let rec go i from depth q acc =
+        if i >= n then List.rev (part from n :: acc)
+        else if s.[i] = '"' then go (i + 1) from depth (not q) acc
+        else if q then go (i + 1) from depth q acc
+        else if is_char s i then go (i + 3) from depth q acc
+        else match s.[i] with
+          | '(' | '[' -> go (i + 1) from (depth + 1) q acc
+          | ')' | ']' -> go (i + 1) from (depth - 1) q acc
+          | ',' when depth = 0 -> go (i + 1) (i + 1) depth q (part from i :: acc)
+          | _ -> go (i + 1) from depth q acc
+      in
+      if s = "" then [] else go 0 0 0 false []
+
+    (* 最初の語（小文字にする）と、残り *)
+    let word s =
+      match String.index_opt s ' ' with
+      | Some i -> String.lowercase_ascii (String.sub s 0 i), String.trim (String.sub s i (String.length s - i))
+      | None -> String.lowercase_ascii s, ""
+
+    (* 名前の部分を tbl で置き換える。文字列と文字定数の中は触らない *)
+    let subst tbl s =
+      if tbl = [] then s
+      else begin
+        let n = String.length s and b = Buffer.create 64 in
+        let rec go i q =
+          if i < n then
+            if s.[i] = '"' then (Buffer.add_char b '"'; go (i + 1) (not q))
+            else if q then (Buffer.add_char b s.[i]; go (i + 1) q)
+            else if is_char s i then (Buffer.add_string b (String.sub s i 3); go (i + 3) q)
+            else if is_tok s.[i] then begin
+              let j = ref i in
+              while !j < n && is_tok s.[!j] do incr j done;
+              let t = String.sub s i (!j - i) in
+              Buffer.add_string b (Option.value ~default:t (List.assoc_opt t tbl));
+              go !j q
+            end
+            else (Buffer.add_char b s.[i]; go (i + 1) q)
+        in
+        go 0 false;
+        Buffer.contents b
+      end
+  end
+
+  open Lexer
 
   (* ---- 式 ----
      ZMA の優先順位（ゆるい順）: || && | ^ & ==,!= < > <= >= << >> + - * / %。単項は + - ! ~。 *)
