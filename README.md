@@ -19,7 +19,7 @@ dune exec zmaml -- file.bin --dis [--org N] [--db 0x120-0x140]
 
 - `src/asm.ml` — 命令の組み立て、展開（MACRO / REPEAT / IF / SCOPE / INCLUDE）、1 行の読み込み
 - `src/dis.ml` — 逆アセンブル（ZMA の記法で出力する）
-- `docs/zma.md` — 対応しているもの、ZMA との違い、未対応のもの
+- `docs/zma.md` — 対応している機能、ZMA との違い、未対応の機能
 
 ## ライセンス
 
