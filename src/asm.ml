@@ -2,14 +2,14 @@
 
    3 つに分ける。どれも、前の結果だけから次を作る関数の組み合わせで、書き換える変数はほとんどない。
    1. 命令の組み立て: 命令を「ニーモニックとオペランドの並び」というデータ（Ast.line）で持ち、
-      機械語か ZMA の書き方のテキストにする。逆アセンブラ（dis.ml）もこのデータを作る。
+      機械語か ZMA の記法のテキストにする。逆アセンブラ（dis.ml）もこのデータを作る。
    2. 展開（expand）: 行のリスト -> 行のリスト。MACRO、REPEAT、IF、SCOPE、INCLUDE、BINARY_LINK を
       文字の置き換えで済ませる。
    3. 読み込み（parse_line）: 1 行 -> Ast.line。式と命令の形を読む。
 
    読むものと、まだ読まないものは docs/zma.md にまとめてある。 *)
 
-(* ---- 命令のデータ（AST）と、それを ZMA の書き方のテキストにする show ---- *)
+(* ---- 命令のデータ（AST）と、それを ZMA の記法のテキストにする show ---- *)
 module Ast = struct
   type e =                         (* アセンブル時に決まる式 *)
     | Num of int
@@ -40,7 +40,7 @@ module Ast = struct
     | Uop (o, a) -> Printf.sprintf "(%s%s)" o (show_e a)
     | Here -> "$"
 
-  (* ZMA の書き方: メモリ参照は [..]、定数は :=、データは defb / defw / space *)
+  (* ZMA の記法: メモリ参照は [..]、定数は :=、データは defb / defw / space *)
   let rec show_arg = function
     | R r -> r
     | I e -> show_e e
@@ -282,7 +282,7 @@ end = struct
     bin, Hashtbl.fold (fun k a l -> (k, a) :: l) syms []
 end
 
-(* ======== ZMA の書き方の読み込み ========
+(* ======== ZMA の記法の読み込み ========
    外に見せるのは parse だけ。字句、式、展開などの部品は、この中に閉じておく。 *)
 module Parser : sig
   (* 戻り値は (org 指示があればその番地, 行) *)

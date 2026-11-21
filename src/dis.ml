@@ -1,4 +1,4 @@
-(* Z80 / R800 逆アセンブラ。命令コードを x y z p q に分けて読み、Asm.Ast.line の命令データに戻して ZMA の書き方で出す。
+(* Z80 / R800 逆アセンブラ。命令コードを x y z p q に分けて読み、Asm.Ast.line の命令データに戻して ZMA の記法で出す。
    アセンブラの逆関数なので、「逆アセンブルして組み立て直すと元に戻る」ことで両方を検査できる。 *)
 
 open Asm
@@ -161,7 +161,7 @@ let disassemble ?(org = 0) ?(data = []) bin =
   let labelled = Hashtbl.create 64 in
   List.iter (fun (_, l, _) -> Option.iter (fun t -> Hashtbl.replace labelled t ()) (target l)) code;
   let b = Buffer.create 4096 in
-  Printf.bprintf b "; 逆アセンブル（ZMA の書き方）（%d バイト、番地 0x%04x〜0x%04x）。\n; 行末のコメントは「番地: 機械語」。L で始まる名前は、飛び先から付けたラベル。\n    org 0x%x\n" (String.length bin) org (ends - 1) org;
+  Printf.bprintf b "; 逆アセンブル（ZMA の記法）（%d バイト、番地 0x%04x〜0x%04x）。\n; 行末のコメントは「番地: 機械語」。L で始まる名前は、飛び先から付けたラベル。\n    org 0x%x\n" (String.length bin) org (ends - 1) org;
   List.iter
     (fun (pc, line, len) ->
       if Hashtbl.mem labelled pc then Printf.bprintf b "%s:\n" (name pc);
