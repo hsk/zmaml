@@ -8,7 +8,10 @@ exception Bad                    (* 公式の命令ではない *)
 
 let sx v = if v > 127 then v - 256 else v
 
-(* rd: 番地 -> バイト。戻り値は (1 行, 長さ)。読めないバイトは defb にする。 *)
+(* 番地 pc にある 1 命令を逆アセンブルする（Encoder.enc の逆）。
+   rd は「番地を渡すとその番地のバイトを返す関数」。
+   戻り値は (その命令, 命令のバイト数)。例: 3e 64 なら (ld a,100, 2)。
+   命令として読めないバイトは、1 バイトの defb とみなして (defb そのバイト, 1) を返す。 *)
 let dis rd pc =
   let at = ref pc in
   let next () = let b = rd !at in incr at; b in
