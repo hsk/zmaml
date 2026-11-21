@@ -1,7 +1,7 @@
-(* Z80 / R800 逆アセンブラ。命令コードを x y z p q に分けて読み、Zma.line の命令データに戻して ZMA の書き方で出す。
+(* Z80 / R800 逆アセンブラ。命令コードを x y z p q に分けて読み、Asm.line の命令データに戻して ZMA の書き方で出す。
    アセンブラの逆関数なので、「逆アセンブルして組み立て直すと元に戻る」ことで両方を検査できる。 *)
 
-open Zma
+open Asm
 
 exception Bad                    (* 公式の命令ではない *)
 
@@ -113,7 +113,7 @@ let dis rd pc =
   | op, args -> Ins (op, args), !at - pc
   | exception Bad -> Db [ Num (rd pc) ], 1
 
-(* ---- 逆アセンブルの出力。組み立て直せる形（Zma.parse が読める）で、コメントに番地と機械語を付ける ---- *)
+(* ---- 逆アセンブルの出力。組み立て直せる形（Asm.parse が読める）で、コメントに番地と機械語を付ける ---- *)
 
 (* image の外を呼ぶ・飛ぶときの名前（MSX の BIOS）と、ポートの名前 *)
 let bios = [ 0x47, "wrtvdp"; 0x4a, "rdvrm"; 0x4d, "wrtvrm"; 0x56, "filvrm"; 0x5c, "ldirvm"; 0x5f, "chgmod"; 0x62, "chgclr";

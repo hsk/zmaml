@@ -31,10 +31,10 @@ let () =
   let rd f =
     match List.find_opt Sys.file_exists (List.map (fun d -> Filename.concat d f) dirs) with
     | Some p -> slurp p
-    | None -> raise (Zma.Error ("ファイルがない: " ^ f))
+    | None -> raise (Asm.Error ("ファイルがない: " ^ f))
   in
-  match Zma.assemble ?org:!org ~read:rd ~defs:!defs (slurp !file) with
-  | exception Zma.Error m -> Printf.eprintf "%s: %s\n" !file m; exit 1
+  match Asm.assemble ?org:!org ~read:rd ~defs:!defs (slurp !file) with
+  | exception Asm.Error m -> Printf.eprintf "%s: %s\n" !file m; exit 1
   | org, bin, _ ->
     let o = if !out = "" then Filename.remove_extension !file ^ ".bin" else !out in
     let oc = open_out_bin o in
