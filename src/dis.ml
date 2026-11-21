@@ -113,7 +113,7 @@ let dis rd pc =
   | op, args -> Ins (op, args), !at - pc
   | exception Bad -> Db [ Num (rd pc) ], 1
 
-(* ---- 逆アセンブルの出力。組み立て直せる形（Asm.parse が読める）で、コメントに番地と機械語を付ける ---- *)
+(* ---- 逆アセンブルの出力。組み立て直せる形（Asm.assemble が読める）で、コメントに番地と機械語を付ける ---- *)
 
 (* image の外を呼ぶ・飛ぶときの名前（MSX の BIOS）と、ポートの名前 *)
 let bios = [ 0x47, "wrtvdp"; 0x4a, "rdvrm"; 0x4d, "wrtvrm"; 0x56, "filvrm"; 0x5c, "ldirvm"; 0x5f, "chgmod"; 0x62, "chgclr";
