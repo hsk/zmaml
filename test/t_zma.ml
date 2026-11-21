@@ -72,12 +72,12 @@ let () =
        (hex bin = "3e64545d7edd7703dd7e00d399e9" ^ "013412" ^ "111e00" ^ "01060b" ^ "000102050607" ^ "000001000102"
                   ^ "10fe18fe" ^ "addeefbe55aa" ^ "aaffd2686978" ^ "000000" ^ "ffff" ^ "0000000000000000" ^ "78563412" ^ "4044");
      check "start は大域ラベル" (List.assoc "start" syms = 0x4000)
-   | exception Asm.Error m -> check ("組み立てられない: " ^ m) false);
+   | exception Zma.Error m -> check ("組み立てられない: " ^ m) false);
   (* 1 つずつ確かめる（上の連結比較より読みやすい形） *)
   let one src want =
     match Zma.assemble src with
     | _, bin, _ -> check (Printf.sprintf "%S → %s（%s だった）" src want (hex bin)) (hex bin = want)
-    | exception Asm.Error m -> check (src ^ ": " ^ m) false
+    | exception Zma.Error m -> check (src ^ ": " ^ m) false
   in
   one "MOGE macro n\n ld a, n\n endm\n MOGE 100" "3e64";
   one "ld a,[hl]\nld [ix+3],a\nld a,[ix]\nout [0x99],a\njp hl\njp [ix]" "7edd7703dd7e00d399e9dde9";
@@ -95,15 +95,15 @@ let () =
   (* エラーは行番号つきで出る *)
   (match Zma.assemble "nop\nld a,\nfoo bar" with
    | _ -> check "エラーになるはず" false
-   | exception Asm.Error m -> check ("行番号: " ^ m) (String.starts_with ~prefix:"2 行目" m || String.starts_with ~prefix:"3 行目" m));
+   | exception Zma.Error m -> check ("行番号: " ^ m) (String.starts_with ~prefix:"2 行目" m || String.starts_with ~prefix:"3 行目" m));
   (match Zma.assemble "if lab == 1\nendif\nlab: nop" with
    | _ -> check "IF にラベルは使えないはず" false
-   | exception Asm.Error _ -> ());
+   | exception Zma.Error _ -> ());
   (* 逆アセンブルして組み立て直すと元に戻る（命令にならないバイトは defb になる） *)
   let seed = ref 12345 in
   let rnd () = seed := (!seed * 1103515245 + 12345) land 0x7fffffff; (!seed lsr 16) land 0xff in
   let image = String.init 20000 (fun _ -> Char.chr (rnd ())) in
   (match Zma.assemble (Dis.disassemble ~org:0x4000 image) with
    | _, bin, _ -> check "逆アセンブルの往復" (bin = image)
-   | exception Asm.Error m -> check ("逆アセンブルの結果が組み立てられない: " ^ m) false);
+   | exception Zma.Error m -> check ("逆アセンブルの結果が組み立てられない: " ^ m) false);
   if !fails > 0 then exit 1
