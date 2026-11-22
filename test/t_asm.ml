@@ -86,6 +86,7 @@ let () =
   one "space 3\nspace 2, 0xff\ndefd 0x12345678" "000000ffff78563412";
   one "repeat I, 3\n repeat I, I+1\n  defb I\n endr\nendr" "000001000102";
   one "repeat I, 2\n repeat J, 3\n  defb I*5 + J\n endr\nendr" "000102050607";
+  one ("MOGE macro n\n ld a, n\n endm\n" ^ String.concat "\n" (List.init 100 (fun _ -> "MOGE 1"))) (String.concat "" (List.init 100 (fun _ -> "3e01")));
   one "scope A\n x: djnz x\nendscope\nx: jr x" "10fe18fe";
   one "n = 3\nif n == 3\n defb 1\nelseif n == 4\n defb 2\nelse\n defb 3\nendif" "01";
   one "a: defb $ - a, $ - a" "0000";               (* $ は、その行の先頭の番地 *)

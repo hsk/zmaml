@@ -601,7 +601,7 @@ end = struct
     | (ln, t) :: rest ->
       let w, r = Lexer.word t in
       let w2, r2 = Lexer.word r in
-      let more env' ls = let e, tl = go rd ctr { env' with vars = env.vars } rest in e, ls @ tl in
+      let more env' ls = let e, tl = go rd ctr { env' with vars = env.vars; depth = env.depth } rest in e, ls @ tl in
       if env.depth > 64 then err ln "展開が深すぎる（マクロが自分を呼んでいないか）"
       else if w2 = "macro" then begin
         let body, rest = block ln [] "endm" rest in
@@ -618,7 +618,7 @@ end = struct
               e', acc @ scoped ctr ls)
             (env, []) (List.init (max n 0) Fun.id)
         in
-        let e, tl = go rd ctr { env' with vars = env.vars } rest in
+        let e, tl = go rd ctr { env' with vars = env.vars; depth = env.depth } rest in
         e, ls @ tl
       end
       else begin
@@ -629,12 +629,12 @@ end = struct
           let body, rest = block ln [ "if" ] "endif" rest in
           let chosen = List.find_opt (fun (c, _) -> need env ln (Lexer.subst env.vars c) <> 0) (branches r body) in
           let env', ls = match chosen with Some (_, b) -> go rd ctr { env with depth = env.depth + 1 } b | None -> env, [] in
-          let e, tl = go rd ctr { env' with vars = env.vars } rest in
+          let e, tl = go rd ctr { env' with vars = env.vars; depth = env.depth } rest in
           e, ls @ tl
         | "scope" ->
           let body, rest = block ln [ "scope" ] "endscope" rest in
           let env', ls = go rd ctr { env with depth = env.depth + 1 } body in
-          let e, tl = go rd ctr { env' with vars = env.vars } rest in
+          let e, tl = go rd ctr { env' with vars = env.vars; depth = env.depth } rest in
           e, scoped ctr ls @ tl
         | "include" -> go rd ctr env (lines_of (rd (unquote ln r)) @ rest)
         | "binary_link" ->

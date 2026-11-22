@@ -1,0 +1,1074 @@
+; ============================================================
+;  xmas.zma  -- SCC で鳴らすクリスマスソング（MSX 用 ROM）
+;
+;  曲  : Jingle Bells / We Wish You a Merry Christmas（どちらも伝承曲）
+;  音源: Konami SCC（5 音のうち 4 音を使う。ハンドベルのように、鳴らしたあと音量を減らす）
+;  画面: SCREEN 1 の飾りつけのツリーと、スプライトの雪
+;
+;  C-BIOS だけで動く（BIOS の呼び出しは CHGMOD / CHGCLR / WRTVDP /
+;  LDIRVM / FILVRM / WRTVRM / SETWRT / RSLREG / ENASLT のみ）。
+;  ROM は 32KB の Konami SCC マッパー。0x4000 から始まり、
+;  0x9000 に 0x3F を書くと 0x9800- が SCC のレジスタになる。
+; ============================================================
+
+        org 0x4000
+
+; ---- BIOS ----
+ENASLT  = 0x0024
+CHGMOD  = 0x005F
+CHGCLR  = 0x0062
+WRTVDP  = 0x0047
+WRTVRM  = 0x004D
+SETWRT  = 0x0053
+FILVRM  = 0x0056
+LDIRVM  = 0x005C
+RSLREG  = 0x0138
+SNSMAT  = 0x0141
+FORCLR  = 0xF3E9
+BAKCLR  = 0xF3EA
+BDRCLR  = 0xF3EB
+EXPTBL  = 0xFCC1
+
+; ---- SCC ----
+SCC_BANK = 0x9000
+SCC_WAVE = 0x9800
+SCC_FREQ = 0x9880
+SCC_VOL  = 0x988A
+SCC_ON   = 0x988F
+
+; ---- VRAM（SCREEN 1）----
+V_NAME  = 0x1800
+V_COLOR = 0x2000
+V_SATR  = 0x1B00
+V_SPAT  = 0x3800
+
+; ---- RAM ----
+tracks    = 0xC000      ; 10 バイト x 4 トラック
+blink_cnt = 0xC030
+blink_ph  = 0xC031
+cur_preset = 0xC032
+key_prev  = 0xC033      ; 押しているキー（bit 0〜3 = 1〜4 キー、bit 4 = スペース）
+mute_flags = 0xC034     ; チャンネルごと 1 バイト（1 = ミュート）
+snow_ph   = 0xC040      ; 12 バイト
+spr_buf   = 0xC050      ; 4 x 12 + 終端 1
+
+N_SNOW  = 12
+N_PRESET = 5
+PRESET_SIZE = 136       ; 音量 4 + 減らし方 4 + 波形 128
+
+; ---- 音の長さ（フレーム数。60Hz で 1 拍 = 22 フレーム = 約 164 BPM）----
+T8      = 11
+T4      = 22
+T4D     = 33
+T2      = 44
+T2D     = 66
+T1      = 88
+RS      = 0xFF          ; 休符
+END     = 0xFE          ; トラックの終わり（先頭へ戻る）
+
+; ---- 音の高さ（C2 = 0。半音で 1 ずつ）----
+C2 = 0
+D2 = 2
+E2 = 4
+F2 = 5
+G2 = 7
+A2 = 9
+B2 = 11
+C3 = 12
+D3 = 14
+E3 = 16
+F3 = 17
+G3 = 19
+A3 = 21
+B3 = 23
+C4 = 24
+D4 = 26
+E4 = 28
+F4 = 29
+G4 = 31
+A4 = 33
+B4 = 35
+C5 = 36
+D5 = 38
+E5 = 40
+F5 = 41
+G5 = 43
+A5 = 45
+B5 = 47
+C6 = 48
+D6 = 50
+E6 = 52
+F6 = 53
+G6 = 55
+A6 = 57
+B6 = 59
+C7 = 60
+D7 = 62
+E7 = 64
+F7 = 65
+G7 = 67
+A7 = 69
+B7 = 71
+
+; ---- 音符 1 つ（高さ, 長さ）----
+nt      macro p_note, p_len
+        defb p_note, p_len
+        endm
+
+; 絵柄を 1 つ読み込む
+loadpat macro p_code, p_src
+        ld hl, p_src
+        ld de, p_code * 8
+        ld bc, 8
+        call LDIRVM
+        endm
+
+; 色を 1 つ決める
+setcol  macro p_grp, p_val
+        ld hl, V_COLOR + p_grp
+        ld a, p_val
+        call WRTVRM
+        endm
+
+; 飾りを 1 つ置く
+orn     macro p_row, p_col, p_chr
+        ld hl, V_NAME + p_row * 32 + p_col
+        ld a, p_chr
+        call WRTVRM
+        endm
+
+; 音色の音量と減らし方を、トラック p_i に入れる
+setpar  macro p_i
+        ld a, [iy + p_i]
+        ld [tracks + 10 * p_i + 5], a
+        ld a, [iy + 4 + p_i]
+        ld [tracks + 10 * p_i + 8], a
+        endm
+
+; ---- ROM のヘッダ ----
+        defb "AB"
+        defw start
+        defw 0, 0, 0
+        space 6
+
+; ============================================================
+;  はじまり
+; ============================================================
+start::
+        call enable_page2
+        ld a, 0x3F
+        ld [SCC_BANK], a        ; 0x9800- を SCC にする
+        call init_scc
+        call init_screen
+        call init_snow
+        call init_tracks
+        xor a
+        ld [cur_preset], a
+        ld [key_prev], a
+        call apply_preset
+        call draw_status
+        ei
+main_loop:
+        halt                    ; 垂直帰線を待つ（60Hz）
+        call play_tick
+        call update_snow
+        call blit_sprites
+        call blink
+        call check_key
+        jr main_loop
+
+; ---- ページ 2 を、この ROM があるスロットにする ----
+enable_page2:
+        call RSLREG
+        rrca
+        rrca
+        and 3
+        ld c, a
+        ld b, 0
+        ld hl, EXPTBL
+        add hl, bc
+        or [hl]
+        ld c, a
+        inc hl
+        inc hl
+        inc hl
+        inc hl
+        ld a, [hl]
+        and 0x0C
+        or c
+        ld h, 0x80
+        jp ENASLT
+
+; ============================================================
+;  SCC
+; ============================================================
+init_scc:
+        xor a
+        ld [SCC_ON], a          ; 波形を書き換えるあいだは止めておく
+        ld hl, SCC_VOL
+        ld b, 5
+        xor a
+is_vol:
+        ld [hl], a
+        inc hl
+        djnz is_vol
+        ld a, 0x0F              ; 1〜4 チャンネルを鳴らす
+        ld [SCC_ON], a
+        ret
+
+; キーを押した瞬間だけ働く
+;   スペース: 次の音色へ    1〜4: そのチャンネルのミュートを切り替える
+check_key:
+        ld a, 8
+        call SNSMAT
+        cpl
+        and 1                   ; スペース
+        rlca
+        rlca
+        rlca
+        rlca
+        ld b, a
+        xor a
+        call SNSMAT
+        cpl
+        and 0x1E                ; 1〜4 キー
+        rrca
+        or b
+        ld b, a
+        ld a, [key_prev]
+        cpl
+        and b                   ; 新しく押されたキー
+        ld c, a
+        ld a, b
+        ld [key_prev], a
+        ld a, c
+        or a
+        ret z
+        ld hl, mute_flags
+        ld b, 4
+ck_mute:
+        srl c
+        jr nc, ck_next
+        ld a, [hl]
+        xor 1
+        ld [hl], a
+ck_next:
+        inc hl
+        djnz ck_mute
+        ld a, c                 ; 残った bit 0 がスペース
+        and 1
+        jr z, draw_status
+        ld a, [cur_preset]
+        inc a
+        cp N_PRESET
+        jr c, ck_ok
+        xor a
+ck_ok:
+        ld [cur_preset], a
+        call apply_preset
+
+; チャンネルの ON / OFF を地面に出す
+draw_status:
+        ld ix, mute_flags
+        ld hl, cells_on
+        ld de, V_NAME + 21 * 32 + 4
+        ld b, 4
+ds_loop:
+        push bc
+        push hl
+        push de
+        ld a, [ix+0]
+        or a
+        jr z, ds_on
+        ld bc, cells_off - cells_on
+        add hl, bc
+ds_on:
+        ld bc, 6
+        call LDIRVM
+        pop de
+        pop hl
+        ld bc, 6
+        add hl, bc
+        ex de, hl
+        add hl, bc
+        ex de, hl
+        inc ix
+        pop bc
+        djnz ds_loop
+        ret
+
+; 音色を決める（トラックの音量・減らし方、SCC の波形、画面の名前）
+apply_preset:
+        ld a, [cur_preset]
+        ld hl, preset_tab
+        ld de, PRESET_SIZE
+ap_mul:
+        or a
+        jr z, ap_go
+        add hl, de
+        dec a
+        jr ap_mul
+ap_go:
+        push hl
+        pop iy
+        setpar 0
+        setpar 1
+        setpar 2
+        setpar 3
+        ld de, 8
+        add hl, de              ; 波形
+        xor a
+        ld [SCC_ON], a          ; 波形を書き換えるあいだは止めておく
+        ld de, SCC_WAVE
+        ld bc, 128
+        ldir
+        ld a, 0x0F
+        ld [SCC_ON], a
+        ld a, [cur_preset]      ; 画面に名前を出す
+        ld hl, name_tab
+        ld de, 12
+ap_name:
+        or a
+        jr z, ap_show
+        add hl, de
+        dec a
+        jr ap_name
+ap_show:
+        ld de, V_NAME + 3 * 32 + 13
+        ld bc, 12
+        jp LDIRVM
+
+init_tracks:
+        ld hl, track_init
+        ld de, tracks
+        ld bc, 40
+        ldir
+        xor a
+        ld [mute_flags], a
+        ld [mute_flags + 1], a
+        ld [mute_flags + 2], a
+        ld [mute_flags + 3], a
+        ld [blink_cnt], a
+        ld [blink_ph], a
+        ret
+
+; 1 フレームぶん、4 つのトラックを進める
+play_tick:
+        ld ix, tracks
+        ld b, 4
+pt_loop:
+        push bc
+        call track_step
+        pop bc
+        ld de, 10
+        add ix, de
+        djnz pt_loop
+        ret
+
+; トラックの形（10 バイト）
+;   +0,+1 次の音符の場所  +2 残りフレーム  +3 チャンネル
+;   +4 移調（半音）       +5 音量           +6,+7 曲の先頭
+;   +8 音量の減らし方（0: 減らさない  n: n フレームに 1 回（1 / 2 / 4））  +9 いまの音量
+track_step:
+        dec [ix+2]
+        jr z, ts_fetch
+                                ; 音の区切りは音量を落とさない（ぷつっというノイズになる）
+                                ; 音の頭は、新しい音で音量が戻るので分かる
+ts_decay:
+        ld a, [ix+8]
+        or a
+        ret z
+        dec a
+        ld b, a
+        ld a, [ix+2]
+        and b                   ; n フレームに 1 回だけ減らす（n は 1, 2, 4）
+        ret nz
+        ld a, [ix+9]
+        or a
+        jr z, ts_dec_ok
+        dec a
+ts_dec_ok:
+        ld [ix+9], a
+        jr ts_setvol
+ts_fetch:
+        ld l, [ix+0]
+        ld h, [ix+1]
+        ld a, [hl]
+        cp END
+        jr nz, ts_have
+        ld l, [ix+6]
+        ld h, [ix+7]
+        ld a, [hl]
+ts_have:
+        inc hl
+        ld c, a
+        ld a, [hl]
+        inc hl
+        ld [ix+2], a
+        ld [ix+0], l
+        ld [ix+1], h
+        ld a, c
+        cp RS
+        jr nz, ts_note
+        xor a
+        ld [ix+9], a
+        jr ts_setvol
+ts_note:
+        add a, [ix+4]
+        ld l, a
+        ld h, 0
+        add hl, hl
+        ld de, freq_table
+        add hl, de
+        ld e, [hl]
+        inc hl
+        ld d, [hl]
+        ld a, [ix+3]
+        add a, a
+        add a, 0x80             ; SCC_FREQ の下位 8 ビット
+        ld l, a
+        ld h, 0x98
+        ld [hl], e
+        inc hl
+        ld [hl], d
+        ld a, [ix+5]
+        ld [ix+9], a
+ts_setvol:
+        ld c, a
+        ld a, [ix+3]
+        ld e, a
+        ld d, 0
+        ld hl, mute_flags
+        add hl, de
+        ld a, [hl]
+        or a
+        jr z, ts_vol_ok
+        ld c, 0                 ; ミュート中は音量 0
+ts_vol_ok:
+        ld a, e
+        add a, 0x8A             ; SCC_VOL の下位 8 ビット
+        ld l, a
+        ld h, 0x98
+        ld [hl], c
+        ret
+
+; ============================================================
+;  画面
+; ============================================================
+init_screen:
+        ld a, 15
+        ld [FORCLR], a
+        ld a, 4
+        ld [BAKCLR], a
+        ld [BDRCLR], a
+        ld a, 1
+        call CHGMOD
+        call CHGCLR
+        ld b, 0xE0              ; 8x8 のスプライト、画面を出す
+        ld c, 1
+        call WRTVDP
+
+        ; 絵柄（文字コード 0x80〜）
+        loadpat 0x80, pat_solid
+        loadpat 0x88, pat_ball
+        loadpat 0x90, pat_ball
+        loadpat 0x98, pat_ball
+        loadpat 0xA0, pat_star
+        loadpat 0xA8, pat_solid
+        loadpat 0xB0, pat_solid
+        loadpat 0xC0, pat_slope_l
+        loadpat 0xC8, pat_slope_r
+        ld hl, pat_snow
+        ld de, V_SPAT
+        ld bc, 16
+        call LDIRVM
+
+        ; 色（8 文字ごとに 1 つ）
+        setcol 16, 0x22         ; 木の緑
+        setcol 17, 0xB2         ; 飾り A
+        setcol 18, 0x52         ; 飾り B
+        setcol 19, 0xD2         ; 飾り C
+        setcol 20, 0xB4         ; 星
+        setcol 21, 0x64         ; 幹
+        setcol 22, 0xFF         ; 雪の地面
+        setcol 24, 0x24         ; 木の左の斜め
+        setcol 25, 0x24         ; 木の右の斜め
+        ld hl, V_COLOR + 8      ; 文字（@ から _）を黄色に
+        ld bc, 4
+        ld a, 0xB4
+        call FILVRM
+
+        ld hl, V_COLOR + 12     ; 小文字（` から DEL）は、白い地面の上の青い字
+        ld bc, 4
+        ld a, 0x4F
+        call FILVRM
+        ld hl, V_COLOR + 5      ; 記号と数字（( から 7）も
+        ld bc, 3
+        ld a, 0x4F
+        call FILVRM
+
+        ; 文字
+        ld hl, msg1
+        ld de, V_NAME + 1 * 32 + 8
+        ld bc, 15
+        call LDIRVM
+        ld hl, msg2
+        ld de, V_NAME + 2 * 32 + 9
+        ld bc, 13
+        call LDIRVM
+
+        ld hl, msg3
+        ld de, V_NAME + 3 * 32 + 7
+        ld bc, 5
+        call LDIRVM
+
+        ; 木
+        call draw_tree
+        ld hl, V_NAME + 4 * 32 + 16
+        ld a, 0xA0
+        call WRTVRM
+        ; 幹
+        ld hl, V_NAME + 17 * 32 + 15
+        ld a, 0xA8
+        ld bc, 3
+        call FILVRM
+        ld hl, V_NAME + 18 * 32 + 15
+        ld a, 0xA8
+        ld bc, 3
+        call FILVRM
+        ld hl, V_NAME + 19 * 32 + 15
+        ld a, 0xA8
+        ld bc, 3
+        call FILVRM
+        ; 地面
+        ld hl, V_NAME + 20 * 32
+        ld a, 0xB0
+        ld bc, 4 * 32
+        call FILVRM
+
+        ld hl, msg4             ; 地面の上の、使い方
+        ld de, V_NAME + 22 * 32 + 4
+        ld bc, 24
+        call LDIRVM
+
+        ; 飾り
+        orn 7, 14, 0x88
+        orn 10, 17, 0x88
+        orn 13, 18, 0x88
+        orn 15, 12, 0x88
+        orn 7, 18, 0x90
+        orn 9, 14, 0x90
+        orn 12, 15, 0x90
+        orn 14, 20, 0x90
+        orn 16, 16, 0x90
+        orn 6, 16, 0x98
+        orn 10, 14, 0x98
+        orn 11, 19, 0x98
+        orn 15, 17, 0x98
+        orn 16, 21, 0x98
+        ret
+
+; 木を 1 段ずつ描く（行, 幅）
+draw_tree:
+        ld hl, tree_rows
+dt_loop:
+        ld a, [hl]
+        cp 0xFF
+        ret z
+        ld c, a
+        inc hl
+        ld b, [hl]
+        inc hl
+        push hl
+        ld l, c
+        ld h, 0
+        add hl, hl
+        add hl, hl
+        add hl, hl
+        add hl, hl
+        add hl, hl              ; 行 x 32
+        ld de, V_NAME + 16
+        add hl, de
+        ld a, b
+        dec a
+        srl a                   ; (幅 - 1) / 2
+        ld e, a
+        ld d, 0
+        or a
+        sbc hl, de
+        call SETWRT
+        ld a, 0xC0              ; 左の斜め
+        out [0x98], a
+        ld a, b
+        sub 2
+        ld b, a
+        ld a, 0x80
+dt_fill:
+        out [0x98], a
+        djnz dt_fill
+        ld a, 0xC8              ; 右の斜め
+        out [0x98], a
+        pop hl
+        jr dt_loop
+
+; 飾りの色を、拍ごとに順番に光らせる
+blink:
+        ld hl, blink_cnt
+        inc [hl]
+        ld a, [hl]
+        cp T8
+        ret c
+        ld [hl], 0
+        ld a, [blink_ph]
+        inc a
+        cp 3
+        jr c, bl_ok
+        xor a
+bl_ok:
+        ld [blink_ph], a
+        add a, a
+        add a, a
+        ld e, a
+        ld d, 0
+        ld hl, blink_tab
+        add hl, de
+        ld de, V_COLOR + 17
+        ld bc, 4
+        jp LDIRVM
+
+; ============================================================
+;  雪（スプライト）
+; ============================================================
+init_snow:
+        ld iy, snow_tab
+        ld ix, spr_buf
+        ld b, N_SNOW
+        ld de, 4
+isn_loop:
+        ld a, [iy+3]
+        ld [ix+0], a
+        ld a, [iy+0]
+        ld [ix+1], a
+        ld a, [iy+2]
+        ld [ix+2], a
+        ld a, 15
+        ld [ix+3], a
+        add ix, de
+        add iy, de
+        djnz isn_loop
+        ld a, 0xD0              ; ここから先は出さない
+        ld [ix+0], a
+        ld hl, snow_ph
+        ld b, N_SNOW
+        xor a
+isn_ph:
+        ld [hl], a
+        inc hl
+        add a, 5
+        djnz isn_ph
+        ret
+
+update_snow:
+        ld iy, snow_tab
+        ld ix, spr_buf
+        ld hl, snow_ph
+        ld b, N_SNOW
+us_loop:
+        ld a, [iy+1]
+        add a, [ix+0]
+        cp 0xC0                 ; 下まで来たら、上の外へ戻す
+        jr c, us_ok
+        cp 0xE0
+        jr nc, us_ok
+        ld a, 0xF0
+us_ok:
+        ld [ix+0], a
+        ld a, [hl]
+        inc a
+        ld [hl], a
+        rrca
+        rrca
+        and 15
+        push hl
+        ld e, a
+        ld d, 0
+        ld hl, sway
+        add hl, de
+        ld a, [hl]
+        pop hl
+        add a, [iy+0]
+        ld [ix+1], a
+        inc hl
+        ld de, 4
+        add ix, de
+        add iy, de
+        djnz us_loop
+        ret
+
+blit_sprites:
+        ld hl, spr_buf
+        ld de, V_SATR
+        ld bc, 4 * N_SNOW + 1
+        jp LDIRVM
+
+; ============================================================
+;  データ
+; ============================================================
+msg1:
+        defb "MERRY CHRISTMAS"
+msg2:
+        defb "ZMAML AND SCC"
+msg3:
+        defb "SOUND"
+msg4:
+        defb "space:sound", 0xB0, 0xB0, "1-4:mute", 0xB0, "ch"
+cells_on:
+        defb "1:on", 0xB0, 0xB0, "2:on", 0xB0, 0xB0, "3:on", 0xB0, 0xB0, "4:on", 0xB0, 0xB0
+cells_off:
+        defb "1:off", 0xB0, "2:off", 0xB0, "3:off", 0xB0, "4:off", 0xB0
+
+pat_solid:
+        defb 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+pat_ball:
+        defb 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C
+pat_star:
+        defb 0x10, 0x38, 0xFE, 0x7C, 0x38, 0x6C, 0x44, 0x00
+pat_slope_l:
+        defb 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF
+pat_slope_r:
+        defb 0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFF
+pat_snow:
+        defb 0x10, 0x54, 0x38, 0xFE, 0x38, 0x54, 0x10, 0x00
+        defb 0x00, 0x00, 0x18, 0x3C, 0x3C, 0x18, 0x00, 0x00
+
+; 木の段（行, 幅）
+tree_rows:
+        defb 5, 3,  6, 5,  7, 7
+        defb 8, 5,  9, 7,  10, 9,  11, 11
+        defb 12, 7,  13, 9,  14, 11,  15, 13,  16, 15
+        defb 0xFF
+
+; 飾りの色（拍ごとに 1 組ずつ。A, B, C, 星）
+blink_tab:
+        defb 0xB2, 0x52, 0xD2, 0xB4
+        defb 0x82, 0xF2, 0xD2, 0xF4
+        defb 0x82, 0x52, 0x72, 0xB4
+
+; 雪（x, 落ちる速さ, 絵柄, 最初の y）
+snow_tab:
+        defb 15, 1, 1, 0
+        defb 32, 1, 1, 37
+        defb 45, 1, 1, 74
+        defb 64, 1, 1, 111
+        defb 90, 2, 0, 148
+        defb 100, 2, 0, 9
+        defb 130, 1, 1, 46
+        defb 149, 2, 0, 83
+        defb 160, 2, 0, 120
+        defb 187, 1, 1, 157
+        defb 201, 1, 1, 18
+        defb 224, 2, 0, 55
+
+sway:
+        defb 0x00, 0x01, 0x02, 0x03, 0x03, 0x03, 0x02, 0x01
+        defb 0x00, 0xff, 0xfe, 0xfd, 0xfd, 0xfd, 0xfe, 0xff
+
+; 音色の表（音量 4、減らし方 4、波形 128）。スペースキーで順に切り替える
+preset_tab:
+        ; HANDBELL
+        defb 15, 9, 13, 8
+        defb 4, 4, 4, 4
+        defb 0x00, 0x2c, 0x52, 0x6d, 0x7c, 0x7f, 0x78, 0x6c
+        defb 0x5f, 0x53, 0x49, 0x41, 0x39, 0x2f, 0x23, 0x12
+        defb 0x00, 0xee, 0xdd, 0xd1, 0xc7, 0xbf, 0xb7, 0xad
+        defb 0xa1, 0x94, 0x88, 0x81, 0x84, 0x93, 0xae, 0xd4
+        defb 0x00, 0x20, 0x3e, 0x58, 0x6c, 0x79, 0x7f, 0x7e
+        defb 0x77, 0x6c, 0x5d, 0x4d, 0x3c, 0x2c, 0x1d, 0x0e
+        defb 0x00, 0xf2, 0xe3, 0xd4, 0xc4, 0xb3, 0xa3, 0x94
+        defb 0x89, 0x82, 0x81, 0x87, 0x94, 0xa8, 0xc2, 0xe0
+        defb 0x00, 0x23, 0x42, 0x5d, 0x71, 0x7c, 0x7f, 0x7a
+        defb 0x70, 0x61, 0x50, 0x3e, 0x2e, 0x1f, 0x13, 0x09
+        defb 0x00, 0xf7, 0xed, 0xe1, 0xd2, 0xc2, 0xb0, 0x9f
+        defb 0x90, 0x86, 0x81, 0x84, 0x8f, 0xa3, 0xbe, 0xdd
+        defb 0x00, 0x33, 0x56, 0x67, 0x6c, 0x71, 0x7a, 0x7f
+        defb 0x76, 0x5c, 0x38, 0x1c, 0x10, 0x11, 0x15, 0x0f
+        defb 0x00, 0xf1, 0xeb, 0xef, 0xf0, 0xe4, 0xc8, 0xa4
+        defb 0x8a, 0x81, 0x86, 0x8f, 0x94, 0x99, 0xaa, 0xcd
+        ; ORGAN
+        defb 9, 5, 8, 4
+        defb 0, 0, 0, 0
+        defb 0x00, 0x3d, 0x6a, 0x7f, 0x7b, 0x67, 0x50, 0x3f
+        defb 0x37, 0x36, 0x36, 0x31, 0x26, 0x19, 0x0d, 0x05
+        defb 0x00, 0xfb, 0xf3, 0xe7, 0xda, 0xcf, 0xca, 0xca
+        defb 0xc9, 0xc1, 0xb0, 0x99, 0x85, 0x81, 0x96, 0xc3
+        defb 0x00, 0x2f, 0x56, 0x72, 0x7f, 0x7e, 0x73, 0x62
+        defb 0x51, 0x43, 0x39, 0x33, 0x2e, 0x27, 0x1d, 0x10
+        defb 0x00, 0xf0, 0xe3, 0xd9, 0xd2, 0xcd, 0xc7, 0xbd
+        defb 0xaf, 0x9e, 0x8d, 0x82, 0x81, 0x8e, 0xaa, 0xd1
+        defb 0x00, 0x27, 0x4a, 0x66, 0x78, 0x7f, 0x7c, 0x6f
+        defb 0x5c, 0x45, 0x2e, 0x19, 0x0a, 0x00, 0xfc, 0xfd
+        defb 0x00, 0x03, 0x04, 0x00, 0xf6, 0xe7, 0xd2, 0xbb
+        defb 0xa4, 0x91, 0x84, 0x81, 0x88, 0x9a, 0xb6, 0xd9
+        defb 0x00, 0x32, 0x5b, 0x75, 0x7f, 0x7b, 0x70, 0x65
+        defb 0x61, 0x65, 0x70, 0x7b, 0x7f, 0x75, 0x5b, 0x32
+        defb 0x00, 0xce, 0xa5, 0x8b, 0x81, 0x85, 0x90, 0x9b
+        defb 0x9f, 0x9b, 0x90, 0x85, 0x81, 0x8b, 0xa5, 0xce
+        ; FLUTE
+        defb 13, 8, 12, 6
+        defb 0, 0, 0, 0
+        defb 0x00, 0x25, 0x46, 0x61, 0x73, 0x7c, 0x7f, 0x7d
+        defb 0x77, 0x71, 0x69, 0x60, 0x54, 0x44, 0x30, 0x19
+        defb 0x00, 0xe7, 0xd0, 0xbc, 0xac, 0xa0, 0x97, 0x8f
+        defb 0x89, 0x83, 0x81, 0x84, 0x8d, 0x9f, 0xba, 0xdb
+        defb 0x00, 0x25, 0x46, 0x61, 0x73, 0x7c, 0x7f, 0x7d
+        defb 0x77, 0x71, 0x69, 0x60, 0x54, 0x44, 0x30, 0x19
+        defb 0x00, 0xe7, 0xd0, 0xbc, 0xac, 0xa0, 0x97, 0x8f
+        defb 0x89, 0x83, 0x81, 0x84, 0x8d, 0x9f, 0xba, 0xdb
+        defb 0x00, 0x25, 0x46, 0x61, 0x73, 0x7c, 0x7f, 0x7d
+        defb 0x77, 0x71, 0x69, 0x60, 0x54, 0x44, 0x30, 0x19
+        defb 0x00, 0xe7, 0xd0, 0xbc, 0xac, 0xa0, 0x97, 0x8f
+        defb 0x89, 0x83, 0x81, 0x84, 0x8d, 0x9f, 0xba, 0xdb
+        defb 0x00, 0x25, 0x46, 0x61, 0x73, 0x7c, 0x7f, 0x7d
+        defb 0x77, 0x71, 0x69, 0x60, 0x54, 0x44, 0x30, 0x19
+        defb 0x00, 0xe7, 0xd0, 0xbc, 0xac, 0xa0, 0x97, 0x8f
+        defb 0x89, 0x83, 0x81, 0x84, 0x8d, 0x9f, 0xba, 0xdb
+        ; MUSIC BOX
+        defb 15, 10, 13, 8
+        defb 1, 1, 2, 1
+        defb 0x00, 0x42, 0x66, 0x69, 0x5f, 0x5f, 0x6b, 0x78
+        defb 0x7e, 0x7f, 0x7e, 0x72, 0x53, 0x23, 0xfa, 0xef
+        defb 0x00, 0x11, 0x06, 0xdd, 0xad, 0x8e, 0x82, 0x81
+        defb 0x82, 0x88, 0x95, 0xa1, 0xa1, 0x97, 0x9a, 0xbe
+        defb 0x00, 0x2d, 0x53, 0x6e, 0x7c, 0x7f, 0x7c, 0x77
+        defb 0x75, 0x77, 0x7c, 0x7f, 0x7c, 0x6e, 0x53, 0x2d
+        defb 0x00, 0xd3, 0xad, 0x92, 0x84, 0x81, 0x84, 0x89
+        defb 0x8b, 0x89, 0x84, 0x81, 0x84, 0x92, 0xad, 0xd3
+        defb 0x00, 0x20, 0x3e, 0x58, 0x6c, 0x79, 0x7f, 0x7e
+        defb 0x77, 0x6c, 0x5d, 0x4d, 0x3c, 0x2c, 0x1d, 0x0e
+        defb 0x00, 0xf2, 0xe3, 0xd4, 0xc4, 0xb3, 0xa3, 0x94
+        defb 0x89, 0x82, 0x81, 0x87, 0x94, 0xa8, 0xc2, 0xe0
+        defb 0x00, 0x2a, 0x47, 0x50, 0x49, 0x40, 0x41, 0x50
+        defb 0x68, 0x7c, 0x7f, 0x6c, 0x49, 0x24, 0x09, 0xfe
+        defb 0x00, 0x02, 0xf7, 0xdc, 0xb7, 0x94, 0x81, 0x84
+        defb 0x98, 0xb0, 0xbf, 0xc0, 0xb7, 0xb0, 0xb9, 0xd6
+        ; CHIPTUNE
+        defb 9, 5, 10, 4
+        defb 0, 0, 0, 0
+        defb 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a
+        defb 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a
+        defb 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6
+        defb 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6
+        defb 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60
+        defb 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0
+        defb 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0
+        defb 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0, 0xe0
+        defb 0x00, 0x14, 0x26, 0x38, 0x47, 0x53, 0x5c, 0x62
+        defb 0x64, 0x62, 0x5c, 0x53, 0x47, 0x38, 0x26, 0x14
+        defb 0x00, 0xec, 0xda, 0xc8, 0xb9, 0xad, 0xa4, 0x9e
+        defb 0x9c, 0x9e, 0xa4, 0xad, 0xb9, 0xc8, 0xda, 0xec
+        defb 0x64, 0x64, 0x64, 0x64, 0xf2, 0xf2, 0xf2, 0xf2
+        defb 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2
+        defb 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2
+        defb 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2, 0xf2
+
+name_tab:
+        defb "HANDBELL    "
+        defb "ORGAN       "
+        defb "FLUTE       "
+        defb "MUSIC BOX   "
+        defb "CHIPTUNE    "
+
+; SCC の周波数（C2 から C7 まで）。値 = 3579545 / (32 x Hz) - 1
+freq_table:
+        defw 1709, 1613, 1523, 1437, 1356, 1280, 1208, 1140
+        defw 1076, 1016, 959, 905, 854, 806, 761, 718
+        defw 678, 640, 604, 570, 538, 507, 479, 452
+        defw 427, 403, 380, 359, 338, 319, 301, 284
+        defw 268, 253, 239, 225, 213, 201, 189, 179
+        defw 169, 159, 150, 142, 134, 126, 119, 112
+        defw 106, 100, 94, 89, 84, 79, 75, 70
+        defw 66, 63, 59, 56, 52
+
+; トラックの初期値（曲の場所, チャンネル, 移調, 音量, 音量の減らし方。減らして、ハンドベルのように響かせる）
+trk     macro p_data, p_ch, p_tr, p_vol, p_dec
+        defw p_data
+        defb 1, p_ch, p_tr, p_vol
+        defw p_data
+        defb p_dec, 0
+        endm
+
+track_init:
+        trk mel_data, 0, 0, 15, 4       ; メロディ（ハンドベル）
+        trk arp_data, 1, 0, 9, 4        ; 和音のアルペジオ
+        trk bass_data, 2, 0, 13, 4      ; ベース（低いベル）
+        trk mel_data, 3, 12, 8, 4       ; メロディの 1 オクターブ上（きらきらした高いベル）
+
+; ============================================================
+;  楽譜
+; ============================================================
+
+; ---- 4 拍子の 1 小節 ----
+arp4    macro p_a, p_b, p_c
+        nt p_a, T8
+        nt p_b, T8
+        nt p_c, T8
+        nt p_b, T8
+        nt p_a, T8
+        nt p_b, T8
+        nt p_c, T8
+        nt p_b, T8
+        endm
+
+bass4   macro p_r, p_f
+        nt p_r, T4
+        nt p_f, T4
+        nt p_r, T4
+        nt p_f, T4
+        endm
+
+; ---- 3 拍子の 1 小節 ----
+arp3    macro p_a, p_b, p_c
+        nt p_a, T8
+        nt p_b, T8
+        nt p_c, T8
+        nt p_b, T8
+        nt p_c, T8
+        nt p_b, T8
+        endm
+
+bass3   macro p_r, p_f
+        nt p_r, T4
+        nt p_f, T4
+        nt p_f, T4
+        endm
+
+; ---- Jingle Bells（サビ 8 小節）----
+jb_mel  macro
+        nt E4, T4
+        nt E4, T4
+        nt E4, T2
+        nt E4, T4
+        nt E4, T4
+        nt E4, T2
+        nt E4, T4
+        nt G4, T4
+        nt C4, T4D
+        nt D4, T8
+        nt E4, T1
+        nt F4, T4
+        nt F4, T4
+        nt F4, T4D
+        nt F4, T8
+        nt F4, T4
+        nt E4, T4
+        nt E4, T4
+        nt E4, T8
+        nt E4, T8
+        nt E4, T4
+        nt D4, T4
+        nt D4, T4
+        nt E4, T4
+        nt D4, T2
+        nt G4, T2
+        endm
+
+jb_bass macro
+        bass4 C2, G2
+        bass4 C2, G2
+        bass4 C2, G2
+        bass4 C2, G2
+        bass4 F2, C3
+        bass4 C2, G2
+        bass4 G2, D3
+        bass4 G2, D3
+        endm
+
+jb_arp  macro
+        arp4 C3, E3, G3
+        arp4 C3, E3, G3
+        arp4 C3, E3, G3
+        arp4 C3, E3, G3
+        arp4 F3, A3, C4
+        arp4 C3, E3, G3
+        arp4 G3, B3, D4
+        arp4 G3, B3, D4
+        endm
+
+; ---- We Wish You a Merry Christmas（ 1 拍の弱起 + 8 小節）----
+ww_mel  macro
+        nt G4, T4
+        nt C5, T4
+        nt C5, T8
+        nt D5, T8
+        nt C5, T8
+        nt B4, T8
+        nt A4, T4
+        nt A4, T4
+        nt A4, T4
+        nt D5, T4
+        nt D5, T8
+        nt E5, T8
+        nt D5, T8
+        nt C5, T8
+        nt B4, T4
+        nt G4, T4
+        nt G4, T4
+        nt E5, T4
+        nt E5, T8
+        nt F5, T8
+        nt E5, T8
+        nt D5, T8
+        nt C5, T4
+        nt A4, T4
+        nt G4, T8
+        nt G4, T8
+        nt A4, T4
+        nt D5, T4
+        nt B4, T4
+        nt C5, T2D
+        endm
+
+ww_bass macro
+        nt RS, T4
+        bass3 C2, G2
+        bass3 F2, C3
+        bass3 G2, D3
+        bass3 G2, D3
+        bass3 C2, G2
+        bass3 F2, C3
+        bass3 G2, D3
+        nt C2, T2D
+        endm
+
+ww_arp  macro
+        nt RS, T4
+        arp3 C3, E3, G3
+        arp3 F3, A3, C4
+        arp3 G3, B3, D4
+        arp3 G3, B3, D4
+        arp3 C3, E3, G3
+        arp3 F3, A3, C4
+        arp3 G3, B3, D4
+        arp3 C3, E3, G3
+        endm
+
+mel_data:
+        jb_mel
+        jb_mel
+        nt C4, T1
+        ww_mel
+        defb END, 0
+
+bass_data:
+        jb_bass
+        jb_bass
+        nt C2, T1
+        ww_bass
+        defb END, 0
+
+arp_data:
+        jb_arp
+        jb_arp
+        arp4 C3, E3, G3
+        ww_arp
+        defb END, 0
